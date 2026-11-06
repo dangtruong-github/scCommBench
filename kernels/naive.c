@@ -1,14 +1,5 @@
-#include "main.h"
+#include "kernels.h"
 
-#include <omp.h>
-
-/**
- * Sign alignment (svd_flip) matching scikit-learn behavior:
- * Forces max absolute entry in each column of U to be positive.
- */
-#include <math.h>
-#include <stddef.h>
-#include <mkl.h>
 
 static void svd_flip(MKL_INT N, MKL_INT M, MKL_INT d, 
                      double *U, double *Vh, double *V_final) {
@@ -88,16 +79,16 @@ void block_power_iter(
     descr.type = SPARSE_MATRIX_TYPE_GENERAL;
 
     // 2. Memory allocations for temporary buffers
-    double *V        = (double*)mkl_malloc(M * d * sizeof(double), 64);
-    double *U        = (double*)mkl_malloc(N * d * sizeof(double), 64);
-    double *W        = (double*)mkl_malloc(M * d * sizeof(double), 64);
-    double *D_temp   = (double*)mkl_malloc(N * d * sizeof(double), 64);
-    double *Vt_R     = (double*)mkl_malloc(d * d * sizeof(double), 64);
-    double *tau      = (double*)mkl_malloc(d * sizeof(double), 64);
-    double *superb   = (double*)mkl_malloc(d * sizeof(double), 64);
-    double *U_final  = (double*)mkl_malloc(N * d * sizeof(double), 64);
-    double *S        = (double*)mkl_malloc(d * sizeof(double), 64);
-    double *Vh_final = (double*)mkl_malloc(d * M * sizeof(double), 64);
+    double *V        = (double*)aligned_alloc_64(M * d * sizeof(double));
+    double *U        = (double*)aligned_alloc_64(N * d * sizeof(double));
+    double *W        = (double*)aligned_alloc_64(M * d * sizeof(double));
+    double *D_temp   = (double*)aligned_alloc_64(N * d * sizeof(double));
+    double *Vt_R     = (double*)aligned_alloc_64(d * d * sizeof(double));
+    double *tau      = (double*)aligned_alloc_64(d * sizeof(double));
+    double *superb   = (double*)aligned_alloc_64(d * sizeof(double));
+    double *U_final  = (double*)aligned_alloc_64(N * d * sizeof(double));
+    double *S        = (double*)aligned_alloc_64(d * sizeof(double));
+    double *Vh_final = (double*)aligned_alloc_64(d * M * sizeof(double));
 
     // 3. Initialize random matrix V of size M x d with standard Gaussian noise
     VSLStreamStatePtr stream;
@@ -158,4 +149,90 @@ void block_power_iter(
     mkl_free(Vt_R);
     mkl_free(tau);
     mkl_free(superb);
+}
+
+
+/**
+ * Computes the N x N pairwise Euclidean distance matrix for D_final (N x d).
+ *
+ * Parameters:
+ *   N         : Number of samples (rows)
+ *   d         : Feature dimension (cols)
+ *   D_final   : Input matrix of shape (N, d)
+ *   Dist      : Output distance matrix of shape (N, N) [Pre-allocated]
+ */
+void compute_pairwise_distances(MKL_INT N, int d, const double *D_final, double *Dist) {
+    // 1. Compute squared row norms: S[i] = sum_k (D[i, k]^2)
+    double *sq_norms = (double*)aligned_alloc_64(N * sizeof(double));
+    
+    #pragma omp parallel for
+    for (MKL_INT i = 0; i < N; ++i) {
+        double norm_sq = 0.0;
+        for (int k = 0; k < d; ++k) {
+            double val = D_final[i * d + k];
+            norm_sq += val * val;
+        }
+        sq_norms[i] = norm_sq;
+    }
+
+    // 2. Gram Matrix G = D_final * D_final^T via Intel MKL cblas_dgemm
+    //    Dist matrix temporarily stores the dot products G[i, j]
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                N, N, d,
+                1.0, D_final, d,
+                D_final, d,
+                0.0, Dist, N);
+
+    // 3. Convert Gram Matrix to Euclidean Distances: sqrt(max(0, S[i] + S[j] - 2*G[i, j]))
+    #pragma omp parallel for collapse(2)
+    for (MKL_INT i = 0; i < N; ++i) {
+        for (MKL_INT j = 0; j < N; ++j) {
+            double g_ij = Dist[i * N + j];
+            double d_sq = sq_norms[i] + sq_norms[j] - 2.0 * g_ij;
+            Dist[i * N + j] = (d_sq > 0.0) ? sqrt(d_sq) : 0.0;
+        }
+    }
+
+    mkl_free(sq_norms);
+}
+
+void naive_seq_lib_baseline(
+    const MKL_INT N, const MKL_INT M, const int d, const int n_iter,
+    const MKL_INT *row_ptr, const MKL_INT *col_ind,
+    const double *values, double *Dist_matrix,
+    float *block_power_time, float *knn_time,
+    bool print_result, const unsigned int seed
+) {
+    CPUTimer timer;
+
+    // Allocate output matrix D_final (N x d)
+    double *D_final = (double*)aligned_alloc_64(N * d * sizeof(double));
+
+    // 2. Execute Block Power Iteration
+    printf("\n=== Running Block Power Iteration (%d iterations, d=%d) ===\n", n_iter, d);
+
+    cpu_timer_init(&timer, "Block Power Iteration", true);
+    block_power_iter(N, M, d, n_iter, row_ptr, col_ind, values, D_final, seed);
+    cpu_timer_destroy(&timer);
+
+    printf("Execution completed in: %.4f seconds\n\n", 0.0f);
+
+    // 3. Compute N x N Distance Matrix
+    printf("=== Computing Pairwise Distance Matrix (%lld x %lld) ===\n", (long long)N, (long long)N);
+
+    cpu_timer_init(&timer, "KNN", true);
+    compute_pairwise_distances(N, d, D_final, Dist_matrix);
+    cpu_timer_destroy(&timer);
+
+    printf("Distance matrix computation completed in: %.4f seconds\n\n", 0.0f);
+
+    // 4. Print Results Summary
+    printf("Top 5x5 Submatrix of Pairwise Distances:\n");
+    for (int i = 0; i < 5; ++i) {
+        printf("Row %d: [", i);
+        for (int j = 0; j < 5; ++j) {
+            printf("%8.8f%s", Dist_matrix[i * N + j], (j == 4) ? "" : ", ");
+        }
+        printf("]\n");
+    }
 }

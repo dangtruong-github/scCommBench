@@ -1,5 +1,7 @@
 ### Others
 data/
+.vscode
+main
 
 ### C/C++
 

@@ -1,59 +1,79 @@
 #include "main.h"
 
-int main() {
-    // Hyperparameters
-    const int d = 5;                // z_pcs
-    const int n_iter = 1200;        // iterations
-    const unsigned int seed = 42;
+void print_usage(const char *prog_name) {
+    printf("Usage: %s [options]\n", prog_name);
+    printf("Options:\n");
+    printf("  -d <int>          Dimensions / z_pcs (default: 5)\n");
+    printf("  -n, --n-iter <int> Number of iterations (default: 10)\n");
+    printf("  -s, --seed <int>   Random seed (default: 42)\n");
+    printf("  -r, --read <str>   Read prefix path (default: \"data/hgdp.qc.pruned\")\n");
+    printf("  -o, --save <str>   Save path (default: \"data/hgdp.qc.pruned.bin\")\n");
+    printf("  -h, --help         Display this help menu\n");
+}
 
-    MKL_INT N, M, nnz;
-    MKL_INT *row_ptr;
-    MKL_INT *col_ind;
+int main(int argc, char *argv[]) {
+    // Default hyperparameters
+    int d = 5;
+    int n_iter = 10;
+    unsigned int seed = 42;
+    const char *read_prefix = "data/hgdp.qc.pruned";
+    const char *save_path = "data/hgdp.qc.pruned.bin";
+
+    // Parse command line arguments
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
+            d = atoi(argv[++i]);
+        } else if ((strcmp(argv[i], "-n") == 0 || strcmp(argv[i], "--n-iter") == 0) && i + 1 < argc) {
+            n_iter = atoi(argv[++i]);
+        } else if ((strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "--seed") == 0) && i + 1 < argc) {
+            seed = (unsigned int)strtoul(argv[++i], NULL, 10);
+        } else if ((strcmp(argv[i], "-r") == 0 || strcmp(argv[i], "--read") == 0) && i + 1 < argc) {
+            read_prefix = argv[++i];
+        } else if ((strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--save") == 0) && i + 1 < argc) {
+            save_path = argv[++i];
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        } else {
+            fprintf(stderr, "Unknown or incomplete argument: %s\n", argv[i]);
+            print_usage(argv[0]);
+            return 1;
+        }
+    }
+
+    // Your main logic continues below:
+    printf("Configuration loaded:\n");
+    printf("  d           : %d\n", d);
+    printf("  n_iter      : %d\n", n_iter);
+    printf("  seed        : %u\n", seed);
+    printf("  read_prefix : %s\n", read_prefix);
+    printf("  save_path   : %s\n\n", save_path);
+
+    int32_t N, M, nnz;
+    int32_t *row_ptr;
+    int32_t *col_ind;
     double  *values;
 
-    int err_data = load_data(&N, &M, &nnz, &row_ptr, &col_ind, &values, "data/sparse_matrix.bin");
-    if (err_data != 0) {
-        return 0;
-    } 
+    int err_data = load_data_plink(&N, &M, &nnz, &row_ptr, &col_ind, &values, read_prefix);
+    if (err_data) {
+        return err_data;
+    }
 
-    // Allocate output matrix D_final (N x d)
-    double *D_final = (double*)mkl_malloc(N * d * sizeof(double), 64);
+    int run_mode_err = run_mode(
+        N, M, d, n_iter, seed,
+        row_ptr, col_ind, values,
+        naive_seq_lib_baseline,
+        "data/hgdp.qc.pruned.cpu_naive.bin"
+    );
 
-    // 2. Execute Block Power Iteration
-    printf("\n=== Running Block Power Iteration (%d iterations, d=%d) ===\n", n_iter, d);
-    double start_time = dsecnd();
-
-    block_power_iter(N, M, d, n_iter, row_ptr, col_ind, values, D_final, seed);
-
-    double end_time = dsecnd();
-    printf("Execution completed in: %.4f seconds\n\n", end_time - start_time);
-
-    // 3. Compute N x N Distance Matrix
-    printf("=== Computing Pairwise Distance Matrix (%lld x %lld) ===\n", (long long)N, (long long)N);
-    double *Dist_matrix = (double*)mkl_malloc(N * N * sizeof(double), 64);
-
-    double dist_start = dsecnd();
-    compute_pairwise_distances(N, d, D_final, Dist_matrix);
-    double dist_end = dsecnd();
-
-    printf("Distance matrix computation completed in: %.4f seconds\n\n", dist_end - dist_start);
-
-    // 4. Print Results Summary
-    printf("Top 5x5 Submatrix of Pairwise Distances:\n");
-    for (int i = 0; i < 5; ++i) {
-        printf("Row %d: [", i);
-        for (int j = 0; j < 5; ++j) {
-            printf("%8.8f%s", Dist_matrix[i * N + j], (j == 4) ? "" : ", ");
-        }
-        printf("]\n");
+    if (run_mode_err) {
+        return run_mode_err;
     }
 
     // 5. Memory Cleanup
-    mkl_free(row_ptr);
-    mkl_free(col_ind);
-    mkl_free(values);
-    mkl_free(D_final);
-    mkl_free(Dist_matrix);
+    free(row_ptr);
+    free(col_ind);
+    free(values);
 
     return 0;
 }
