@@ -211,18 +211,18 @@ void naive_seq_lib_baseline(
     // 2. Execute Block Power Iteration
     printf("\n=== Running Block Power Iteration (%d iterations, d=%d) ===\n", n_iter, d);
 
-    cpu_timer_init(&timer, "Block Power Iteration", true);
+    cpu_timer_init(&timer, "Block Power Iteration", print_result);
     block_power_iter(N, M, d, n_iter, row_ptr, col_ind, values, D_final, seed);
-    cpu_timer_destroy(&timer);
+    *block_power_time = cpu_timer_destroy(&timer);
 
     printf("Execution completed in: %.4f seconds\n\n", 0.0f);
 
     // 3. Compute N x N Distance Matrix
     printf("=== Computing Pairwise Distance Matrix (%lld x %lld) ===\n", (long long)N, (long long)N);
 
-    cpu_timer_init(&timer, "KNN", true);
+    cpu_timer_init(&timer, "KNN", print_result);
     compute_pairwise_distances(N, d, D_final, Dist_matrix);
-    cpu_timer_destroy(&timer);
+    *knn_time = cpu_timer_destroy(&timer);
 
     printf("Distance matrix computation completed in: %.4f seconds\n\n", 0.0f);
 

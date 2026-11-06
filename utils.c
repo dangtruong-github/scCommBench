@@ -227,7 +227,12 @@ int load_data_plink(
     // --- PASS 2: Populate col_ind and values ---
     fseek(bed_fp, 3, SEEK_SET); // Reset file pointer past the 3-byte header
     for (int32_t j = 0; j < M; ++j) {
-        fread(snp_buf, 1, bytes_per_snp, bed_fp);
+        int fread_err = fread(snp_buf, 1, bytes_per_snp, bed_fp);
+
+        if (fread_err) {
+            printf("Error %d: Read file error", fread_err);
+            return fread_err;
+        }
 
         for (int32_t i = 0; i < N; ++i) {
             uint8_t bits = (snp_buf[i / 4] >> ((i % 4) * 2)) & 0x03;
