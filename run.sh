@@ -1,5 +1,5 @@
 #!/bin/bash
 
 make && {
-    ./main --n-iter 30 > test.log
+    ./main --n-iter 1000 > test.log
 }
