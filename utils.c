@@ -355,6 +355,81 @@ int save_dist_mat_bin(
     return 0;
 }
 
+int save_dist_mat_bin_mpi(
+    const char *file_path, const MKL_INT N,
+    const unsigned int seed, const int d,
+    const int n_iter, const double *Dist_local,
+    const int rank, const int world_size
+) {
+    MKL_INT N_start, N_end;
+    get_start_end(N, rank, world_size, &N_start, &N_end);
+
+    MKL_INT N_local = N_end - N_start;
+    size_t header_size = sizeof(MKL_INT) + sizeof(unsigned int) + 2 * sizeof(int);
+
+    // 1. Rank 0 creates/truncates file and writes binary header
+    if (rank == 0) {
+        int fd = open(file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) {
+            perror("Rank 0 failed to create binary output file");
+            return 1;
+        }
+
+        char header_buf[128];
+        char *ptr = header_buf;
+        memcpy(ptr, &N, sizeof(MKL_INT));            ptr += sizeof(MKL_INT);
+        memcpy(ptr, &seed, sizeof(unsigned int));    ptr += sizeof(unsigned int);
+        memcpy(ptr, &d, sizeof(int));                ptr += sizeof(int);
+        memcpy(ptr, &n_iter, sizeof(int));
+
+        if (write(fd, header_buf, header_size) != (ssize_t)header_size) {
+            perror("Error writing header");
+            close(fd);
+            return 1;
+        }
+        close(fd);
+    }
+
+    // Wait until Rank 0 finishes creating the file and writing the header
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    // 2. Open file for parallel writing on all ranks
+    int fd = open(file_path, O_WRONLY);
+    if (fd < 0) {
+        fprintf(stderr, "Rank %d failed opening file for pwrite\n", rank);
+        return 1;
+    }
+
+    // 3. Compute target file offset and perform offset-based write
+    off_t target_offset = (off_t)header_size + ((off_t)N_start * N * sizeof(double));
+    size_t total_bytes  = (size_t)N_local * N * sizeof(double);
+
+    size_t bytes_written = 0;
+    const char *byte_ptr = (const char *)Dist_local;
+
+    while (bytes_written < total_bytes) {
+        ssize_t ret = pwrite(
+            fd, byte_ptr + bytes_written,
+            total_bytes - bytes_written,
+            target_offset + (off_t)bytes_written
+        );
+
+        if (ret <= 0) {
+            fprintf(stderr, "Rank %d error writing payload at offset %ld\n", rank, target_offset);
+            close(fd);
+            return 1;
+        }
+        bytes_written += ret;
+    }
+
+    close(fd);
+
+    if (rank == 0) {
+        printf("Successfully saved distributed matrix via POSIX pwrite to %s\n", file_path);
+    }
+    return 0;
+}
+
 bool validate(
     double *dist_mat_truth, double *dist_mat,
     const MKL_INT M, const MKL_INT N,
@@ -428,4 +503,23 @@ double cpu_timer_destroy(CPUTimer *timer) {
     }
     
     return elapsed;
+}
+
+void get_start_end(MKL_INT N, int rank, int world_size, MKL_INT *N_start, MKL_INT *N_end) {
+    if (!N_start || !N_end) return;
+    if (world_size <= 0 || rank < 0 || rank >= world_size) {
+        *N_start = 0;
+        *N_end = 0;
+        return;
+    }
+
+    MKL_INT base_N = N / world_size;
+    MKL_INT rem    = N % world_size;
+
+    // Distribute remainder 1 by 1 to the first 'rem' ranks
+    MKL_INT local_count = base_N + (rank < rem ? 1 : 0);
+    MKL_INT start       = rank * base_N + (rank < rem ? rank : rem);
+
+    *N_start = start;
+    *N_end   = start + local_count;
 }

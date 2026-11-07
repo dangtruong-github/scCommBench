@@ -66,9 +66,17 @@ int save_dist_mat_bin(
     const unsigned int seed, const int d,
     const int n_iter, const double *Dist_matrix_new
 );
+int save_dist_mat_bin_mpi(
+    const char *file_path, const MKL_INT N,
+    const unsigned int seed, const int d,
+    const int n_iter, const double *Dist_local,
+    const int rank, const int world_size
+);
 
 bool validate(
     double *dist_mat_truth, double *dist_mat,
     const MKL_INT M, const MKL_INT N,
     const double atol, const double rtol
 );
+
+void get_start_end(MKL_INT N, int rank, int world_size, MKL_INT *N_start, MKL_INT *N_end);

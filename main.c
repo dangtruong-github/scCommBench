@@ -47,12 +47,14 @@ int main(int argc, char *argv[]) {
     }
 
     // Your main logic continues below:
-    printf("Configuration loaded:\n");
-    printf("  d           : %d\n", d);
-    printf("  n_iter      : %d\n", n_iter);
-    printf("  seed        : %u\n", seed);
-    printf("  read_prefix : %s\n", read_prefix);
-    printf("  save_path   : %s\n\n", save_path);
+    if (rank == 0) {
+        printf("Configuration loaded:\n");
+        printf("  d           : %d\n", d);
+        printf("  n_iter      : %d\n", n_iter);
+        printf("  seed        : %u\n", seed);
+        printf("  read_prefix : %s\n", read_prefix);
+        printf("  save_path   : %s\n\n", save_path);
+    }
 
     MKL_INT N, M_global, M_local, nnz;
     MKL_INT *row_ptr;
@@ -73,8 +75,7 @@ int main(int argc, char *argv[]) {
         N, M_local, M_global, rank,
         world_size, d, n_iter, seed,
         row_ptr, col_ind, values,
-        mpi_impl,
-        "data/hgdp.qc.pruned.cpu_naive.bin"
+        mpi_impl, save_path
     );
 
     if (run_mode_err) {

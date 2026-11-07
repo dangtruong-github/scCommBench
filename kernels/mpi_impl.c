@@ -59,9 +59,7 @@ static void svd_flip_mpi(MKL_INT N, MKL_INT M, MKL_INT d,
  *   D_final      : Reconstructed product X @ Vh_final.T (N x d), Row-Major
  */
 void block_power_iter_mpi(
-    const MKL_INT N, const MKL_INT M_local,
-    const MKL_INT M_global, const int rank,
-    const int world_size, const int d,
+    const MKL_INT N, const MKL_INT M_local, const int d,
     const int n_iter, const MKL_INT *row_ptr,
     const MKL_INT *col_ind, const double *values,
     double *D_final, unsigned int random_state,
@@ -108,25 +106,25 @@ void block_power_iter_mpi(
 
     // 4. Block Power Iteration Loop
     for (int iter = 0; iter < n_iter; ++iter) {
-        // Step 1: Forward pass U = X @ V (N x d)
-        cpu_timer_init(&timer, "Step 1", print_time);
+        // Step 1a: Local Forward SpMM (D_temp = X_local @ V_local)
+        cpu_timer_init(&timer, "Step 1a: Local Forward SpMM", print_time);
         mkl_sparse_d_mm(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, X_handle, descr,
                         SPARSE_LAYOUT_ROW_MAJOR, V, d, d, 0.0, D_temp, d);
         cpu_timer_destroy(&timer);
 
-        // AllReduce U
-        cpu_timer_init(&timer, "Step 1", print_time);
+        // Step 1b: AllReduce Forward Pass (U = sum(D_temp))
+        cpu_timer_init(&timer, "Step 1b: AllReduce Forward Pass", print_time);
         MPI_Allreduce(D_temp, U, N * d, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         cpu_timer_destroy(&timer);
 
-        // Step 2: Backward pass W = X.T @ U (M x d)
-        cpu_timer_init(&timer, "Step 2", print_time);
+        // Step 2: Local Backward SpMM (W_local = X_local^T @ U)
+        cpu_timer_init(&timer, "Step 2: Local Backward SpMM", print_time);
         mkl_sparse_d_mm(SPARSE_OPERATION_TRANSPOSE, 1.0, X_handle, descr,
                         SPARSE_LAYOUT_ROW_MAJOR, U, d, d, 0.0, W, d);
         cpu_timer_destroy(&timer);
 
-        // Step 3 & 4: Orthonormalize d vectors and update V
-        cpu_timer_init(&timer, "Step 3&4 new", print_time);
+        // Step 3a: Compute Local Gram Matrix (G_local = W_local^T @ W_local)
+        cpu_timer_init(&timer, "Step 3a: Local Gram Matrix", print_time);
         cblas_dgemm(
             CblasRowMajor, CblasTrans, CblasNoTrans,
             d, d, M_local,
@@ -134,14 +132,20 @@ void block_power_iter_mpi(
             W, d,
             0.0, Vt_R, d
         );
+        cpu_timer_destroy(&timer);
 
-        // AllReduce Gram matrix
+        // Step 3b: AllReduce Gram Matrix (G_global = sum(G_local))
+        cpu_timer_init(&timer, "Step 3b: AllReduce Gram Matrix", print_time);
         MPI_Allreduce(MPI_IN_PLACE, Vt_R, d * d, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        cpu_timer_destroy(&timer);
 
-        // 2. Cholesky factorization: G = R^T @ R
+        // Step 4a: Cholesky Factorization (G_global = R^T @ R)
+        cpu_timer_init(&timer, "Step 4a: Cholesky Factorization", print_time);
         LAPACKE_dpotrf(LAPACK_ROW_MAJOR, 'U', d, Vt_R, d);
+        cpu_timer_destroy(&timer);
 
-        // 3. V = W @ R^{-1} (in-place solve)
+        // Step 4b: Triangular Solve & Update V (V_local = W_local @ R^-1)
+        cpu_timer_init(&timer, "Step 4b: Triangular Solve (V Update)", print_time);
         cblas_dtrsm(
             CblasRowMajor, CblasRight, CblasUpper,
             CblasNoTrans, CblasNonUnit,
@@ -149,40 +153,50 @@ void block_power_iter_mpi(
             1.0, Vt_R, d,
             W, d
         );
+        memcpy(V, W, M_local * d * sizeof(double));
         cpu_timer_destroy(&timer);
 
         memcpy(V, W, M_local * d * sizeof(double));
     }
 
-    // 5. Rayleigh-Ritz Step
-    // D_temp = X @ V (N x d)
+    // Step 5a: Local Rayleigh-Ritz SpMM (U = X_local @ V_local)
+    cpu_timer_init(&timer, "Step 5a: Local Rayleigh-Ritz SpMM", print_time);
     mkl_sparse_d_mm(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, X_handle, descr,
                     SPARSE_LAYOUT_ROW_MAJOR, V, d, d, 0.0, U, d);
+    cpu_timer_destroy(&timer);
 
-    // AllReduce D_temp
+    // Step 5b: AllReduce Rayleigh-Ritz Pass (D_temp = sum(U))
+    cpu_timer_init(&timer, "Step 5b: AllReduce Rayleigh-Ritz Pass", print_time);
     MPI_Allreduce(U, D_temp, N * d, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    cpu_timer_destroy(&timer);
 
-    // Thin SVD on D_temp: D_temp = U_tilde @ diag(S) @ V_R_t
-    // Output: U_tilde -> U_final (N x d), S -> S (d), V_R_t -> Vt_R (d x d)
+    // Step 5c: Thin SVD on Projected Matrix (D_temp -> U_tilde @ S @ V_R_t)
+    cpu_timer_init(&timer, "Step 5c: Thin SVD (Rayleigh-Ritz)", print_time);
     LAPACKE_dgesvd(LAPACK_ROW_MAJOR, 'S', 'S', N, d, D_temp, d, S, U_final, d, Vt_R, d, superb);
+    cpu_timer_destroy(&timer);
 
-    // Reconstruct V_final (M x d) = V (M x d) @ V_R (d x d)
-    // Reusing array 'W' to hold V_final
+    // Step 5d: Local Basis Reconstruction & Transpose (Vh_final_local = (V_local @ V_R)^T)
+    cpu_timer_init(&timer, "Step 5d: Local Basis Reconstruction & Transpose", print_time);
     cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                 M_local, d, d, 1.0, V, d, Vt_R, d, 0.0, W, d);
-
-    // Transpose V_final (M x d) -> Vh_final (d x M)
     mkl_domatcopy('R', 'T', M_local, d, 1.0, W, d, Vh_final, M_local);
+    cpu_timer_destroy(&timer);
 
-    // 6. Align signs
+    // Step 6: SVD Sign Flip Alignment
+    cpu_timer_init(&timer, "Step 6: SVD Sign Flip Alignment", print_time);
     svd_flip_mpi(N, M_local, d, U_final, Vh_final, W);
+    cpu_timer_destroy(&timer);
 
-    // 7. Compute d_final = X @ Vh_final.T (N x d)
+    // Step 7a: Local Final Score SpMM (U = X_local @ Vh_final_local^T)
+    cpu_timer_init(&timer, "Step 7a: Local Final Score SpMM", print_time);
     mkl_sparse_d_mm(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, X_handle, descr,
                     SPARSE_LAYOUT_ROW_MAJOR, W, d, d, 0.0, U, d);
+    cpu_timer_destroy(&timer);
 
-    // AllReduce d_final
+    // Step 7b: AllReduce Final Score Pass (D_final = sum(U))
+    cpu_timer_init(&timer, "Step 7b: AllReduce Final Score Pass", print_time);
     MPI_Allreduce(U, D_final, N * d, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    cpu_timer_destroy(&timer);
 
     // Cleanup
     mkl_sparse_destroy(X_handle);
@@ -205,34 +219,55 @@ void block_power_iter_mpi(
  *   D_final   : Input matrix of shape (N, d)
  *   Dist      : Output distance matrix of shape (N, N) [Pre-allocated]
  */
-void compute_pairwise_distances_mpi(MKL_INT N, int d, const double *D_final, double *Dist) {
-    // 1. Compute squared row norms: S[i] = sum_k (D[i, k]^2)
-    double *sq_norms = (double*)aligned_alloc_64(N * sizeof(double));
-    
-    #pragma omp parallel for
+/**
+ * Computes a row-partitioned slice [N_start, N_end) of the N x N pairwise Euclidean distance matrix.
+ *
+ * Parameters:
+ *   N         : Total number of global samples (rows in D_final)
+ *   N_start   : Starting global sample index for this node's partition
+ *   N_end     : Ending global sample index (exclusive) for this node's partition
+ *   d         : Feature dimension (number of principal components)
+ *   D_final   : Full feature matrix of shape (N, d), available on all ranks
+ *   Dist      : Output distance buffer of shape (N_local, N), pre-allocated by caller
+ */
+void compute_pairwise_distances_mpi(
+    MKL_INT N, MKL_INT N_start, MKL_INT N_end, int d,
+    const double *D_final, double *Dist
+) {
+    MKL_INT N_local = N_end - N_start;
+    if (N_local <= 0) return;
+
+    // 1. Compute squared row norms for all N samples: S[i] = sum_k (D[i, k]^2)
+    double *sq_norms = (double*)mkl_malloc(N * sizeof(double), 64);
+
+    #pragma omp parallel for schedule(static)
     for (MKL_INT i = 0; i < N; ++i) {
         double norm_sq = 0.0;
+        const double *row = &D_final[i * d];
         for (int k = 0; k < d; ++k) {
-            double val = D_final[i * d + k];
-            norm_sq += val * val;
+            norm_sq += row[k] * row[k];
         }
         sq_norms[i] = norm_sq;
     }
 
-    // 2. Gram Matrix G = D_final * D_final^T via Intel MKL cblas_dgemm
-    //    Dist matrix temporarily stores the dot products G[i, j]
-    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                N, N, d,
-                1.0, D_final, d,
-                D_final, d,
-                0.0, Dist, N);
+    // 2. Compute local Gram matrix slice G_local = D_final[N_start:N_end, :] @ D_final^T
+    //    Dist temporarily stores dot products of shape (N_local x N)
+    cblas_dgemm(
+        CblasRowMajor, CblasNoTrans, CblasTrans,
+        N_local, N, d,
+        1.0, &D_final[N_start * d], d,
+        D_final, d,
+        0.0, Dist, N
+    );
 
-    // 3. Convert Gram Matrix to Euclidean Distances: sqrt(max(0, S[i] + S[j] - 2*G[i, j]))
-    #pragma omp parallel for collapse(2)
-    for (MKL_INT i = 0; i < N; ++i) {
+    // 3. Convert Gram Matrix dot products to Euclidean Distances:
+    //    Dist[i_local, j] = sqrt(max(0, S[N_start + i_local] + S[j] - 2 * G[i_local, j]))
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (MKL_INT i = 0; i < N_local; ++i) {
         for (MKL_INT j = 0; j < N; ++j) {
+            MKL_INT global_i = N_start + i;
             double g_ij = Dist[i * N + j];
-            double d_sq = sq_norms[i] + sq_norms[j] - 2.0 * g_ij;
+            double d_sq = sq_norms[global_i] + sq_norms[j] - 2.0 * g_ij;
             Dist[i * N + j] = (d_sq > 0.0) ? sqrt(d_sq) : 0.0;
         }
     }
@@ -251,32 +286,35 @@ void mpi_impl(
 ) {
     CPUTimer timer;
 
+    printf("Running rank=%d/%d with M_local=%lld/%lld\n", rank, world_size, (long long)M_local, (long long)M_global);
+
     // Allocate output matrix D_final (N x d)
     double *D_final = (double*)aligned_alloc_64(N * d * sizeof(double));
 
     // 2. Execute Block Power Iteration
-    printf("\n=== Running Block Power Iteration (%d iterations, d=%d) ===\n", n_iter, d);
+    printf("=== Running Block Power Iteration (%d iterations, d=%d) of rank=%d ===\n", n_iter, d, rank);
 
     cpu_timer_init(&timer, "Block Power Iteration", print_result);
     block_power_iter_mpi(
-        N, M_local, M_global, rank,
-        world_size, d, n_iter, row_ptr,
+        N, M_local, d, n_iter, row_ptr,
         col_ind, values, D_final, seed, print_result
     );
     *block_power_time = cpu_timer_destroy(&timer);
 
-    printf("Execution completed in: %.4f seconds\n\n", *block_power_time);
+    printf("Block Power Iteration rank=%d completed in: %.4f seconds\n\n", rank, *block_power_time);
 
     // 3. Compute N x N Distance Matrix
-    printf("=== Computing Pairwise Distance Matrix (%lld x %lld) ===\n", (long long)N, (long long)N);
+    printf("=== Computing Pairwise Distance Matrix (%lld x %lld) of rank=%d ===\n", (long long)N, (long long)N, rank);
+
+    cpu_timer_init(&timer, "KNN", print_result);
+    MKL_INT N_start, N_end;
+    get_start_end(N, rank, world_size, &N_start, &N_end);
+    compute_pairwise_distances_mpi(N, N_start, N_end, d, D_final, Dist_matrix);
+    *knn_time = cpu_timer_destroy(&timer);
+
+    printf("Distance matrix computation of rank %d completed in: %.4f seconds\n\n", rank, *knn_time);
 
     if (rank == 0) {
-        cpu_timer_init(&timer, "KNN", print_result);
-        compute_pairwise_distances_mpi(N, d, D_final, Dist_matrix);
-        *knn_time = cpu_timer_destroy(&timer);
-
-        printf("Distance matrix computation completed in: %.4f seconds\n\n", *knn_time);
-
         // 4. Print Results Summary
         printf("Top 5x5 Submatrix of Pairwise Distances:\n");
         for (int i = 0; i < 5; ++i) {

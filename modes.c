@@ -66,18 +66,16 @@ int run_mode(
         N, M_local, M_global, rank, world_size,
         d, n_iter, row_ptr, col_ind, values,
         Dist_matrix, &block_power_time,
-        &knn_time, true, seed
+        &knn_time, rank == 0, seed
     );
     printf("Total computation completed in: %.4f seconds of save_path=%s\n\n",
         block_power_time + knn_time, save_path
     );
 
-    if (rank != 0) {
-        mkl_free(Dist_matrix);
-        return 0;
-    }
-
-    int save_err = save_dist_mat_bin(save_path, N, seed, d, n_iter, Dist_matrix);
+    int save_err = save_dist_mat_bin_mpi(
+        save_path, N, seed, d, n_iter,
+        Dist_matrix, rank, world_size
+    );
 
     mkl_free(Dist_matrix);
 
