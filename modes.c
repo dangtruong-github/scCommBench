@@ -1,9 +1,9 @@
 #include "main.h"
 
 int compare_mode(
-    const int32_t N, const int32_t M, const int d,
+    const MKL_INT N, const MKL_INT M, const int d,
     const int n_iter, const unsigned int seed,
-    const int32_t *row_ptr, const int32_t *col_ind,
+    const MKL_INT *row_ptr, const MKL_INT *col_ind,
     const double *values, algo_func_t func1, algo_func_t func2
 ) {
     // Allocate output matrix D_final (N x d)
@@ -47,23 +47,29 @@ int compare_mode(
 }
 
 int run_mode(
-    const int32_t N, const int32_t M, const int d,
-    const int n_iter, const unsigned int seed,
-    const int32_t *row_ptr, const int32_t *col_ind,
-    const double *values, algo_func_t func1,
-    const char *save_path
+    const MKL_INT N, const MKL_INT M_local,
+    const MKL_INT M_global, const int rank,
+    const int world_size, const int d, const int n_iter,
+    const unsigned int seed, const MKL_INT *row_ptr,
+    const MKL_INT *col_ind, const double *values,
+    algo_func_t func1, const char *save_path
 ) {
     // Allocate output matrix D_final (N x d)
     double *Dist_matrix = (double*)aligned_alloc_64((size_t)N * N * sizeof(double));
     float block_power_time, knn_time;
 
     func1(
-        N, M, d, n_iter, row_ptr, col_ind,
+        N, M_local, d, n_iter, row_ptr, col_ind,
         values, Dist_matrix, &block_power_time,
         &knn_time, true, seed
     );
-    printf("Total computation completed in: %.4f seconds\n\n", block_power_time + knn_time);
+    printf("Total computation completed in: %.4f seconds of M_global=%d, rank=%d, world_size=%d\n\n",
+        block_power_time + knn_time, M_global, rank, world_size
+    );
 
-    int save_err = save_dist_mat_bin(save_path, N, seed, d, n_iter, Dist_matrix);
+    int save_err = 0; // save_dist_mat_bin(save_path, N, seed, d, n_iter, Dist_matrix);
+
+    mkl_free(Dist_matrix);
+
     return save_err;
 }

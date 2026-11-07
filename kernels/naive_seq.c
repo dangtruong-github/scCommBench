@@ -215,7 +215,7 @@ void naive_seq_lib_baseline(
     block_power_iter(N, M, d, n_iter, row_ptr, col_ind, values, D_final, seed);
     *block_power_time = cpu_timer_destroy(&timer);
 
-    printf("Execution completed in: %.4f seconds\n\n", 0.0f);
+    printf("Execution completed in: %.4f seconds\n\n", *block_power_time);
 
     // 3. Compute N x N Distance Matrix
     printf("=== Computing Pairwise Distance Matrix (%lld x %lld) ===\n", (long long)N, (long long)N);
@@ -224,7 +224,7 @@ void naive_seq_lib_baseline(
     compute_pairwise_distances(N, d, D_final, Dist_matrix);
     *knn_time = cpu_timer_destroy(&timer);
 
-    printf("Distance matrix computation completed in: %.4f seconds\n\n", 0.0f);
+    printf("Distance matrix computation completed in: %.4f seconds\n\n", *knn_time);
 
     // 4. Print Results Summary
     printf("Top 5x5 Submatrix of Pairwise Distances:\n");

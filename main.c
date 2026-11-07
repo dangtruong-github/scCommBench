@@ -12,6 +12,11 @@ void print_usage(const char *prog_name) {
 }
 
 int main(int argc, char *argv[]) {
+    MPI_Init(&argc, &argv);
+    int rank, world_size;
+    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
     // Default hyperparameters
     int d = 5;
     int n_iter = 10;
@@ -49,18 +54,24 @@ int main(int argc, char *argv[]) {
     printf("  read_prefix : %s\n", read_prefix);
     printf("  save_path   : %s\n\n", save_path);
 
-    int32_t N, M, nnz;
-    int32_t *row_ptr;
-    int32_t *col_ind;
+    MKL_INT N, M_global, M_local, nnz;
+    MKL_INT *row_ptr;
+    MKL_INT *col_ind;
     double  *values;
 
-    int err_data = load_data_plink(&N, &M, &nnz, &row_ptr, &col_ind, &values, read_prefix);
+    int err_data = load_plink_partition_mpi(
+        read_prefix, rank, world_size,
+        &N, &M_local, &M_global, &nnz,
+        &row_ptr, &col_ind, &values
+    );
+
     if (err_data) {
         return err_data;
     }
 
     int run_mode_err = run_mode(
-        N, M, d, n_iter, seed,
+        N, M_local, M_global, rank,
+        world_size, d, n_iter, seed,
         row_ptr, col_ind, values,
         naive_seq_lib_baseline,
         "data/hgdp.qc.pruned.cpu_naive.bin"
@@ -75,5 +86,6 @@ int main(int argc, char *argv[]) {
     free(col_ind);
     free(values);
 
+    MPI_Finalize();
     return 0;
 }

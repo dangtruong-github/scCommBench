@@ -2,23 +2,23 @@
 
 // Function to print a CSR matrix in dense 2D grid format
 void print_csr_as_dense(
-    int32_t N, int32_t M, 
-    const int32_t *row_ptr, const int32_t *col_ind, const double *values,
-    int32_t max_rows, int32_t max_cols
+    MKL_INT N, MKL_INT M, 
+    const MKL_INT *row_ptr, const MKL_INT *col_ind, const double *values,
+    MKL_INT max_rows, MKL_INT max_cols
 ) {
-    int32_t r_limit = (max_rows > 0 && max_rows < N) ? max_rows : N;
-    int32_t c_limit = (max_cols > 0 && max_cols < M) ? max_cols : M;
+    MKL_INT r_limit = (max_rows > 0 && max_rows < N) ? max_rows : N;
+    MKL_INT c_limit = (max_cols > 0 && max_cols < M) ? max_cols : M;
 
     printf("\n=== Sparse Matrix Printed in Dense View (%lld x %lld preview of %lld x %lld) ===\n", 
            (long long)r_limit, (long long)c_limit, (long long)N, (long long)M);
 
-    for (int32_t i = 0; i < r_limit; ++i) {
-        int32_t row_start = row_ptr[i];
-        int32_t row_end   = row_ptr[i + 1];
-        int32_t ptr = row_start;
+    for (MKL_INT i = 0; i < r_limit; ++i) {
+        MKL_INT row_start = row_ptr[i];
+        MKL_INT row_end   = row_ptr[i + 1];
+        MKL_INT ptr = row_start;
 
         printf("[");
-        for (int32_t j = 0; j < c_limit; ++j) {
+        for (MKL_INT j = 0; j < c_limit; ++j) {
             double val = 0.0;
 
             // Check if current column matches the stored non-zero entry
@@ -42,74 +42,12 @@ void print_csr_as_dense(
     printf("\n");
 }
 
-int load_data(
-    int32_t *N, int32_t *M, int32_t *nnz,
-    int32_t **row_ptr, int32_t **col_ind,
-    double **values, const char *file_path
-) {
-    // 1. Load Matrix from Binary File
-    FILE *f = fopen(file_path, "rb");
-    if (!f) {
-        perror("Error opening sparse_matrix.bin");
-        return 1;
-    }
-
-    int64_t header[3];
-    if (fread(header, sizeof(int64_t), 3, f) != 3) {
-        fclose(f);
-        return -1;
-    }
-
-    *N   = (int32_t)header[0];
-    *M   = (int32_t)header[1];
-    *nnz = (int32_t)header[2];
-
-    *row_ptr = (int32_t*)aligned_alloc_64(((*N) + 1) * sizeof(int32_t));
-    *col_ind = (int32_t*)aligned_alloc_64((*nnz) * sizeof(int32_t));
-    *values  = (double*)aligned_alloc_64((*nnz) * sizeof(double));
-
-    printf("=== Loaded Sparse CSR Matrix from File (%lld x %lld) ===\n", (long long)(*N), (long long)(*M));
-    printf("Loaded %lld non-zero elements (Sparsity: %.2f%%)\n", 
-           (long long)(*nnz), (1.0 - (double)(*nnz) / ((*N) * (*M))) * 100.0);
-
-    // Temporary integer buffers for 64-bit binary conversion
-    int64_t *tmp_row_ptr = (int64_t*)malloc(((*N) + 1) * sizeof(int64_t));
-    int64_t *tmp_col_ind = (int64_t*)malloc((*nnz) * sizeof(int64_t));
-
-    // Allocate 64-byte aligned CSR arrays for MKL
-
-    if (!tmp_row_ptr || !tmp_col_ind || !*row_ptr || !*col_ind || !*values) {
-        fprintf(stderr, "Memory allocation failed.\n");
-        fclose(f);
-        return 1;
-    }
-
-    // Read binary arrays sequentially
-    if (fread(tmp_row_ptr, sizeof(int64_t), (*N) + 1, f) != (size_t)((*N) + 1) ||
-        fread(tmp_col_ind, sizeof(int64_t), (*nnz), f)   != (size_t)(*nnz) ||
-        fread((*values),      sizeof(double),  (*nnz), f)   != (size_t)(*nnz)) {
-        fprintf(stderr, "Error reading CSR array data.\n");
-        fclose(f);
-        return 1;
-    }
-    fclose(f);
-
-    // Convert loaded integer indices to int32_t type
-    for (int32_t i = 0; i <= (*N); ++i) (*row_ptr)[i] = (int32_t)tmp_row_ptr[i];
-    for (int32_t i = 0; i < (*nnz); ++i)  (*col_ind)[i] = (int32_t)tmp_col_ind[i];
-
-    free(tmp_row_ptr);
-    free(tmp_col_ind);
-
-    return 0;
-}
-
 // Helper to count lines in a text file (.fam / .bim / .bin)
-static int32_t count_file_lines(const char *path) {
+static MKL_INT count_file_lines(const char *path) {
     FILE *fp = fopen(path, "r");
     if (!fp) return -1;
 
-    int32_t lines = 0;
+    MKL_INT lines = 0;
     int ch;
     int last_ch = '\n';
     
@@ -130,15 +68,15 @@ static int32_t count_file_lines(const char *path) {
 }
 
 int load_data_plink(
-    int32_t *out_N, int32_t *out_M, int32_t *out_nnz,
-    int32_t **out_row_ptr, int32_t **out_col_ind,
+    MKL_INT *out_N, MKL_INT *out_M, MKL_INT *out_nnz,
+    MKL_INT **out_row_ptr, MKL_INT **out_col_ind,
     double **out_values, const char *prefix
 ) {
     char path_buf[512];
 
     // 1. Get N from .fam
     snprintf(path_buf, sizeof(path_buf), "%s.fam", prefix);
-    int32_t N = count_file_lines(path_buf);
+    MKL_INT N = count_file_lines(path_buf);
     if (N <= 0) {
         fprintf(stderr, "Error reading .fam file: %s\n", path_buf);
         return -1;
@@ -146,7 +84,7 @@ int load_data_plink(
 
     // 2. Get M from .bim (or fallback to .bin)
     snprintf(path_buf, sizeof(path_buf), "%s.bim", prefix);
-    int32_t M = count_file_lines(path_buf);
+    MKL_INT M = count_file_lines(path_buf);
     if (M <= 0) {
         snprintf(path_buf, sizeof(path_buf), "%s.bin", prefix);
         M = count_file_lines(path_buf);
@@ -174,7 +112,7 @@ int load_data_plink(
 
     size_t bytes_per_snp = (N + 3) / 4;
     unsigned char *snp_buf = (unsigned char *)malloc(bytes_per_snp);
-    int32_t *row_counts = (int32_t *)calloc(N, sizeof(int32_t));
+    MKL_INT *row_counts = (MKL_INT *)calloc(N, sizeof(MKL_INT));
     
     if (!snp_buf || !row_counts) {
         fclose(bed_fp);
@@ -184,8 +122,8 @@ int load_data_plink(
     }
 
     // --- PASS 1: Count non-zeros per row ---
-    int32_t total_nnz = 0;
-    for (int32_t j = 0; j < M; ++j) {
+    MKL_INT total_nnz = 0;
+    for (MKL_INT j = 0; j < M; ++j) {
         if (fread(snp_buf, 1, bytes_per_snp, bed_fp) != bytes_per_snp) {
             fprintf(stderr, "Error reading byte stream at SNP %d\n", j);
             free(snp_buf);
@@ -194,7 +132,7 @@ int load_data_plink(
             return -6;
         }
 
-        for (int32_t i = 0; i < N; ++i) {
+        for (MKL_INT i = 0; i < N; ++i) {
             uint8_t bits = (snp_buf[i / 4] >> ((i % 4) * 2)) & 0x03;
             if (bits == 0b10 || bits == 0b11) {
                 row_counts[i]++;
@@ -204,10 +142,10 @@ int load_data_plink(
     }
 
     // Allocate output CSR arrays
-    int32_t *row_ptr = (int32_t *)malloc((N + 1) * sizeof(int32_t));
-    int32_t *col_ind = (int32_t *)malloc(total_nnz * sizeof(int32_t));
+    MKL_INT *row_ptr = (MKL_INT *)malloc((N + 1) * sizeof(MKL_INT));
+    MKL_INT *col_ind = (MKL_INT *)malloc(total_nnz * sizeof(MKL_INT));
     double  *values  = (double *)malloc(total_nnz * sizeof(double));
-    int32_t *curr_pos = (int32_t *)malloc(N * sizeof(int32_t));
+    MKL_INT *curr_pos = (MKL_INT *)malloc(N * sizeof(MKL_INT));
 
     if (!row_ptr || !col_ind || !values || !curr_pos) {
         free(snp_buf); free(row_counts); free(curr_pos);
@@ -218,7 +156,7 @@ int load_data_plink(
 
     // Construct row_ptr offsets
     row_ptr[0] = 0;
-    for (int32_t i = 0; i < N; ++i) {
+    for (MKL_INT i = 0; i < N; ++i) {
         row_ptr[i + 1] = row_ptr[i] + row_counts[i];
         curr_pos[i] = row_ptr[i];
     }
@@ -226,7 +164,7 @@ int load_data_plink(
 
     // --- PASS 2: Populate col_ind and values ---
     fseek(bed_fp, 3, SEEK_SET); // Reset file pointer past the 3-byte header
-    for (int32_t j = 0; j < M; ++j) {
+    for (MKL_INT j = 0; j < M; ++j) {
         int fread_err = fread(snp_buf, 1, bytes_per_snp, bed_fp);
 
         if (fread_err) {
@@ -234,7 +172,7 @@ int load_data_plink(
             return fread_err;
         }
 
-        for (int32_t i = 0; i < N; ++i) {
+        for (MKL_INT i = 0; i < N; ++i) {
             uint8_t bits = (snp_buf[i / 4] >> ((i % 4) * 2)) & 0x03;
             double val = 0.0;
             
@@ -242,7 +180,7 @@ int load_data_plink(
             else if (bits == 0b11) val = 2.0; // Homozygous A2
 
             if (val > 0.0) {
-                int32_t idx = curr_pos[i]++;
+                MKL_INT idx = curr_pos[i]++;
                 col_ind[idx] = j;
                 values[idx]  = val;
             }
@@ -265,8 +203,127 @@ int load_data_plink(
     return 0;
 }
 
+int load_plink_partition_mpi(
+    const char *prefix, int rank, int world_size,
+    MKL_INT *out_N, MKL_INT *out_M_local, MKL_INT *out_M_glob,
+    MKL_INT *out_nnz, MKL_INT **out_row_ptr,
+    MKL_INT **out_col_ind, double **out_values
+) {
+    char path_buf[512];
+    MKL_INT N = 0, M_global = 0;
+
+    // --- STEP 1: Parse global N and M on Rank 0 ---
+    if (rank == 0) {
+        snprintf(path_buf, sizeof(path_buf), "%s.fam", prefix);
+        N = count_file_lines(path_buf);
+
+        snprintf(path_buf, sizeof(path_buf), "%s.bim", prefix);
+        M_global = count_file_lines(path_buf);
+    }
+
+    // Broadcast global dimensions to all ranks
+    MPI_Bcast(&N, 1, MPI_MKL_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&M_global, 1, MPI_MKL_INT, 0, MPI_COMM_WORLD);
+
+    if (N <= 0 || M_global <= 0) return -1;
+
+    // --- STEP 2: Compute Column Range per Node ---
+    MKL_INT base_M = M_global / world_size;
+    MKL_INT rem    = M_global % world_size;
+
+    MKL_INT M_local = base_M + (rank < rem ? 1 : 0);
+    MKL_INT j_start = rank * base_M + (rank < rem ? rank : rem);
+
+    size_t bytes_per_snp = (N + 3) / 4;
+    off_t  byte_offset   = 3 + (off_t)j_start * bytes_per_snp;
+
+    // --- STEP 3: Open .bed and Read Local Buffer ---
+    snprintf(path_buf, sizeof(path_buf), "%s.bed", prefix);
+    int fd = open(path_buf, O_RDONLY);
+    if (fd < 0) return -2;
+
+    // Verify 3-byte magic header
+    unsigned char header[3];
+    if (pread(fd, header, 3, 0) != 3 ||
+        header[0] != 0x6C || header[1] != 0x1B || header[2] != 0x01) {
+        close(fd);
+        return -3;
+    }
+
+    size_t local_bytes = (size_t)M_local * bytes_per_snp;
+    unsigned char *raw_buf = (unsigned char *)malloc(local_bytes);
+    if (!raw_buf) { close(fd); return -4; }
+
+    // Direct offset read (thread-safe, avoids fseek seek-race)
+    if (pread(fd, raw_buf, local_bytes, byte_offset) != (ssize_t)local_bytes) {
+        free(raw_buf);
+        close(fd);
+        return -5;
+    }
+    close(fd);
+
+    // --- STEP 4: Build Local CSR Matrix (Single-Pass in RAM) ---
+    MKL_INT *row_counts = (MKL_INT *)calloc(N, sizeof(MKL_INT));
+    MKL_INT total_nnz = 0;
+
+    // Pass 1 (In Memory): Count non-zeros per sample row
+    for (MKL_INT j = 0; j < M_local; ++j) {
+        const unsigned char *snp_ptr = raw_buf + (j * bytes_per_snp);
+        for (MKL_INT i = 0; i < N; ++i) {
+            uint8_t bits = (snp_ptr[i / 4] >> ((i % 4) * 2)) & 0x03;
+            if (bits == 0b10 || bits == 0b11) {
+                row_counts[i]++;
+                total_nnz++;
+            }
+        }
+    }
+
+    // Allocate output CSR arrays
+    MKL_INT *row_ptr  = (MKL_INT *)malloc((N + 1) * sizeof(MKL_INT));
+    MKL_INT *col_ind  = (MKL_INT *)malloc(total_nnz * sizeof(MKL_INT));
+    double  *values   = (double *)malloc(total_nnz * sizeof(double));
+    MKL_INT *curr_pos = (MKL_INT *)malloc(N * sizeof(MKL_INT));
+
+    row_ptr[0] = 0;
+    for (MKL_INT i = 0; i < N; ++i) {
+        row_ptr[i + 1] = row_ptr[i] + row_counts[i];
+        curr_pos[i] = row_ptr[i];
+    }
+    free(row_counts);
+
+    // Pass 2 (In Memory): Populate local column indices [0 .. M_local - 1]
+    for (MKL_INT j = 0; j < M_local; ++j) {
+        const unsigned char *snp_ptr = raw_buf + (j * bytes_per_snp);
+        for (MKL_INT i = 0; i < N; ++i) {
+            uint8_t bits = (snp_ptr[i / 4] >> ((i % 4) * 2)) & 0x03;
+            double val = 0.0;
+            if (bits == 0b10) val = 1.0;
+            else if (bits == 0b11) val = 2.0;
+
+            if (val > 0.0) {
+                MKL_INT idx = curr_pos[i]++;
+                col_ind[idx] = j; // Local column index [0 .. M_local - 1]
+                values[idx]  = val;
+            }
+        }
+    }
+
+    free(raw_buf);
+    free(curr_pos);
+
+    *out_N = N;
+    *out_M_glob = M_global;
+    *out_M_local = M_local;
+    *out_nnz = total_nnz;
+    *out_row_ptr = row_ptr;
+    *out_col_ind = col_ind;
+    *out_values = values;
+
+    return 0;
+}
+
 int save_dist_mat_bin(
-    const char *file_path, const int32_t N,
+    const char *file_path, const MKL_INT N,
     const unsigned int seed, const int d,
     const int n_iter, const double *Dist_matrix_new
 ) {
@@ -278,7 +335,7 @@ int save_dist_mat_bin(
     } 
     
     // 1. Write the integer N at the top of the file
-    fwrite(&N, sizeof(int32_t), 1, fp);
+    fwrite(&N, sizeof(MKL_INT), 1, fp);
     fwrite(&seed, sizeof(unsigned int), 1, fp);
     fwrite(&d, sizeof(int), 1, fp);
     fwrite(&n_iter, sizeof(int), 1, fp);
@@ -300,7 +357,7 @@ int save_dist_mat_bin(
 
 bool validate(
     double *dist_mat_truth, double *dist_mat,
-    const int32_t M, const int32_t N,
+    const MKL_INT M, const MKL_INT N,
     const double atol, const double rtol
 ) {
     if (dist_mat_truth == NULL || dist_mat == NULL) {
@@ -309,9 +366,9 @@ bool validate(
 
     bool matches = true;
 
-    for (int32_t r = 0; r < M; ++r) {
-        for (int32_t c = 0; c < N; ++c) {
-            int64_t i = (int64_t)r * N + c;
+    for (MKL_INT r = 0; r < M; ++r) {
+        for (MKL_INT c = 0; c < N; ++c) {
+            uint64_t i = (uint64_t)r * N + c;
             double truth = dist_mat_truth[i];
             double val = dist_mat[i];
 
