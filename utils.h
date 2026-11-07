@@ -1,19 +1,20 @@
 #pragma once
 
-#define _XOPEN_SOURCE 700
-
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <math.h>
 #include <time.h>
 #include <mkl.h>
-#include <stdbool.h>
-
-#include <stdint.h>
-#include <unistd.h>
-#include <fcntl.h>
 #include <mpi.h>
+
+// Helper to resolve the correct MPI datatype for MKL_INT automatically
+#if defined(MKL_ILP64) || (SIZEOF_MKL_INT == 8)
+    #define MPI_MKL_INT MPI_INT64_T
+#else
+    #define MPI_MKL_INT MPI_INT
+#endif
 
 // Helper to resolve the correct MPI datatype for MKL_INT automatically
 #if defined(MKL_ILP64) || (SIZEOF_MKL_INT == 8)
@@ -43,34 +44,9 @@ static inline void* aligned_alloc_64(size_t size) {
 }
 
 void print_csr_as_dense(
-    MKL_INT N, MKL_INT M, 
-    const MKL_INT *row_ptr, const MKL_INT *col_ind, const double *values,
+    MKL_INT N, MKL_INT M, const MKL_INT *row_ptr,
+    const MKL_INT *col_ind, const double *values,
     MKL_INT max_rows, MKL_INT max_cols
-);
-
-int load_data_plink(
-    MKL_INT *out_N, MKL_INT *out_M, MKL_INT *out_nnz,
-    MKL_INT **out_row_ptr, MKL_INT **out_col_ind,
-    double **out_values, const char *prefix
-);
-int load_plink_partition_mpi(
-    const char *prefix, int rank, int world_size,
-    MKL_INT *out_N, MKL_INT *out_M_local, MKL_INT *out_M_glob,
-    MKL_INT *out_nnz, MKL_INT **out_row_ptr,
-    MKL_INT **out_col_ind, double **out_values
-);
-
-
-int save_dist_mat_bin(
-    const char *file_path, const MKL_INT N,
-    const unsigned int seed, const int d,
-    const int n_iter, const double *Dist_matrix_new
-);
-int save_dist_mat_bin_mpi(
-    const char *file_path, const MKL_INT N,
-    const unsigned int seed, const int d,
-    const int n_iter, const double *Dist_local,
-    const int rank, const int world_size
 );
 
 bool validate(

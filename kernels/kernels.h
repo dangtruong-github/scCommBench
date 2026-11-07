@@ -1,14 +1,7 @@
 #pragma once
 
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <stddef.h>
-#include <stdbool.h>
-
-#include <math.h>
-#include <time.h>
-#include <mkl.h>
 #include <omp.h>
 
 #include "../utils.h"
@@ -30,4 +23,19 @@ void naive_seq_lib_baseline(
     const double *values, double *Dist_matrix,
     float *block_power_time, float *knn_time,
     bool print_result, const unsigned int seed
+);
+
+// Files I/O methods
+
+int load_plink_partition_mpi(
+    const char *prefix, int rank, int world_size,
+    MKL_INT *out_N, MKL_INT *out_M_local, MKL_INT *out_M_glob,
+    MKL_INT *out_nnz, MKL_INT **out_row_ptr,
+    MKL_INT **out_col_ind, double **out_values
+);
+int save_dist_mat_bin_mpi(
+    const char *file_path, const MKL_INT N,
+    const unsigned int seed, const int d,
+    const int n_iter, const double *Dist_local,
+    const int rank, const int world_size
 );
