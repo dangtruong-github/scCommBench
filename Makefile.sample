@@ -1,0 +1,82 @@
+# -----------------------------------------------------------------------------
+# Compiler Selection
+# -----------------------------------------------------------------------------
+# Default to mpicc; override with CC=mpicxx or CC=mpic++ if building C++ code
+CC ?= mpicc
+
+CFLAGS ?= -O3 -Wall -Wextra -fopenmp -MMD -MP -std=c11
+LDFLAGS ?= 
+
+# Build Mode: run `make ASAN=1` or `make asan`
+ASAN ?= 0
+
+# -----------------------------------------------------------------------------
+# AddressSanitizer Configuration
+# -----------------------------------------------------------------------------
+ifeq ($(ASAN), 1)
+    ASAN_FLAGS := -fsanitize=address -g -O1
+    CFLAGS     += $(ASAN_FLAGS)
+    LDFLAGS    += $(ASAN_FLAGS)
+endif
+
+# -----------------------------------------------------------------------------
+# MPI Configuration
+# -----------------------------------------------------------------------------
+# Fetch extra MPI include/lib flags if mpicc supports --showme or -show
+MPI_CFLAGS := $(shell mpicc --showme:compile 2>/dev/null || mpicc -show 2>/dev/null | grep -o '\-I[^ ]*')
+MPI_LIBS   := $(shell mpicc --showme:link 2>/dev/null || mpicc -show 2>/dev/null | grep -o '\-L[^ ]* \-l[^ ]*')
+
+# -----------------------------------------------------------------------------
+# MKL Configuration via pkg-config (fallback to $MKLROOT if unavailable)
+# -----------------------------------------------------------------------------
+USE_PKG_CONFIG := $(shell pkg-config --exists mkl-dynamic-lp64-gomp 2>/dev/null && echo yes)
+
+ifeq ($(USE_PKG_CONFIG),yes)
+    MKL_CFLAGS := $(shell pkg-config --cflags mkl-dynamic-lp64-gomp)
+    MKL_LIBS   := $(shell pkg-config --libs mkl-dynamic-lp64-gomp)
+else
+    MKLROOT ?= /opt/intel/oneapi/mkl/latest
+    MKL_CFLAGS := -I$(MKLROOT)/include
+    MKL_LIBS   := -L$(MKLROOT)/lib/intel64 -lmkl_intel_lp64 -lmkl_gnu_thread -lmkl_core -lgomp -lpthread -lm -ldl
+endif
+
+# Combine all compiler & linker flags
+CFLAGS += $(MPI_CFLAGS) $(MKL_CFLAGS) -I. -Ikernels
+LDLIBS += $(MPI_LIBS) $(MKL_LIBS) -lm
+
+# -----------------------------------------------------------------------------
+# Source & Object File Discovery
+# -----------------------------------------------------------------------------
+SRCS := $(wildcard *.c) $(wildcard kernels/*.c)
+OBJS := $(SRCS:.c=.o)
+DEPS := $(OBJS:.o=.d)
+
+TARGET := main
+
+.PHONY: all clean asan run
+
+all: $(TARGET)
+
+# Shortcut target to rebuild with AddressSanitizer
+asan:
+	@$(MAKE) clean
+	@$(MAKE) ASAN=1 all
+
+# Link object files into final executable
+$(TARGET): $(OBJS)
+	$(CC) $(LDFLAGS) $^ -o $@ $(LDLIBS)
+
+# Pattern rule for compiling C source files
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Include auto-generated header dependency files (.d)
+-include $(DEPS)
+
+# Helper target to run the MPI program locally (e.g., make run NP=4)
+NP ?= 4
+run: $(TARGET)
+	mpirun -np $(NP) ./$(TARGET)
+
+clean:
+	rm -f $(OBJS) $(DEPS) $(TARGET)
