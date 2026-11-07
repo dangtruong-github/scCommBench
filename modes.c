@@ -1,5 +1,7 @@
 #include "main.h"
 
+/*
+
 int compare_mode(
     const MKL_INT N, const MKL_INT M, const int d,
     const int n_iter, const unsigned int seed,
@@ -45,6 +47,8 @@ int compare_mode(
 
     return 0;
 }
+*/
+
 
 int run_mode(
     const MKL_INT N, const MKL_INT M_local,
@@ -59,15 +63,21 @@ int run_mode(
     float block_power_time, knn_time;
 
     func1(
-        N, M_local, d, n_iter, row_ptr, col_ind,
-        values, Dist_matrix, &block_power_time,
+        N, M_local, M_global, rank, world_size,
+        d, n_iter, row_ptr, col_ind, values,
+        Dist_matrix, &block_power_time,
         &knn_time, true, seed
     );
-    printf("Total computation completed in: %.4f seconds of M_global=%d, rank=%d, world_size=%d\n\n",
-        block_power_time + knn_time, M_global, rank, world_size
+    printf("Total computation completed in: %.4f seconds of save_path=%s\n\n",
+        block_power_time + knn_time, save_path
     );
 
-    int save_err = 0; // save_dist_mat_bin(save_path, N, seed, d, n_iter, Dist_matrix);
+    if (rank != 0) {
+        mkl_free(Dist_matrix);
+        return 0;
+    }
+
+    int save_err = save_dist_mat_bin(save_path, N, seed, d, n_iter, Dist_matrix);
 
     mkl_free(Dist_matrix);
 

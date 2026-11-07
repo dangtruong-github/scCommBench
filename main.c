@@ -73,7 +73,7 @@ int main(int argc, char *argv[]) {
         N, M_local, M_global, rank,
         world_size, d, n_iter, seed,
         row_ptr, col_ind, values,
-        naive_seq_lib_baseline,
+        mpi_impl,
         "data/hgdp.qc.pruned.cpu_naive.bin"
     );
 

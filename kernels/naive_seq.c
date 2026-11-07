@@ -61,8 +61,10 @@ static void svd_flip(MKL_INT N, MKL_INT M, MKL_INT d,
 void block_power_iter(
     MKL_INT N, MKL_INT M, int d, int n_iter, const MKL_INT *row_ptr,
     const MKL_INT *col_ind, const double *values,
-    double *D_final, unsigned int random_state
+    double *D_final, unsigned int random_state, bool print_time
 ) {
+    CPUTimer timer;
+
     // 1. Create MKL Sparse Matrix Handle (0-based indexing)
     sparse_matrix_t X_handle;
     mkl_sparse_d_create_csr(
@@ -103,16 +105,41 @@ void block_power_iter(
     // 4. Block Power Iteration Loop
     for (int iter = 0; iter < n_iter; ++iter) {
         // Step 1: Forward pass U = X @ V (N x d)
+        cpu_timer_init(&timer, "Step 1", print_time);
         mkl_sparse_d_mm(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, X_handle, descr,
                         SPARSE_LAYOUT_ROW_MAJOR, V, d, d, 0.0, U, d);
+        cpu_timer_destroy(&timer);
 
         // Step 2: Backward pass W = X.T @ U (M x d)
+        cpu_timer_init(&timer, "Step 2", print_time);
         mkl_sparse_d_mm(SPARSE_OPERATION_TRANSPOSE, 1.0, X_handle, descr,
                         SPARSE_LAYOUT_ROW_MAJOR, U, d, d, 0.0, W, d);
+        cpu_timer_destroy(&timer);
 
+        cpu_timer_init(&timer, "Step 3&4 new", print_time);
         // Step 3 & 4: Orthonormalize d vectors and update V
-        LAPACKE_dgeqrf(LAPACK_ROW_MAJOR, M, d, W, d, tau);
-        LAPACKE_dorgqr(LAPACK_ROW_MAJOR, M, d, d, W, d, tau);
+        cblas_dgemm(
+            CblasRowMajor, CblasTrans, CblasNoTrans,
+            d, d, M,
+            1.0, W, d,
+            W, d,
+            0.0, Vt_R, d
+        );
+
+        // 2. Cholesky factorization: G = R^T @ R
+        LAPACKE_dpotrf(LAPACK_ROW_MAJOR, 'U', d, Vt_R, d);
+
+        // 3. V = W @ R^{-1} (in-place solve)
+        cblas_dtrsm(
+            CblasRowMajor, CblasRight, CblasUpper,
+            CblasNoTrans, CblasNonUnit,
+            M, d,
+            1.0, Vt_R, d,
+            W, d
+        );
+        cpu_timer_destroy(&timer);
+        
+
         memcpy(V, W, M * d * sizeof(double));
     }
 
@@ -197,12 +224,21 @@ void compute_pairwise_distances(MKL_INT N, int d, const double *D_final, double 
 }
 
 void naive_seq_lib_baseline(
-    const MKL_INT N, const MKL_INT M, const int d, const int n_iter,
+    const MKL_INT N, const MKL_INT M_local,
+    const MKL_INT M_global, const int rank,
+    const int world_size, const int d, const int n_iter,
     const MKL_INT *row_ptr, const MKL_INT *col_ind,
     const double *values, double *Dist_matrix,
     float *block_power_time, float *knn_time,
     bool print_result, const unsigned int seed
 ) {
+    printf("M_global=%d, rank=%d, world_size=%d\n", M_global, rank, world_size);
+
+    if (world_size > 1) {
+        printf("This only works for np=1");
+        exit(1);
+    }
+    
     CPUTimer timer;
 
     // Allocate output matrix D_final (N x d)
@@ -212,7 +248,10 @@ void naive_seq_lib_baseline(
     printf("\n=== Running Block Power Iteration (%d iterations, d=%d) ===\n", n_iter, d);
 
     cpu_timer_init(&timer, "Block Power Iteration", print_result);
-    block_power_iter(N, M, d, n_iter, row_ptr, col_ind, values, D_final, seed);
+    block_power_iter(
+        N, M_local, d, n_iter, row_ptr, col_ind,
+        values, D_final, seed, print_result
+    );
     *block_power_time = cpu_timer_destroy(&timer);
 
     printf("Execution completed in: %.4f seconds\n\n", *block_power_time);
@@ -235,4 +274,6 @@ void naive_seq_lib_baseline(
         }
         printf("]\n");
     }
+
+    mkl_free(D_final);
 }

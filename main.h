@@ -4,7 +4,8 @@
 #include "utils.h"
 
 typedef void (*algo_func_t)(
-    MKL_INT, MKL_INT, int, int,
+    const MKL_INT, const MKL_INT, const MKL_INT,
+    const int, const int, const int, const int,
     const MKL_INT*, const MKL_INT*, const double*,
     double*, float*, float*, bool, unsigned int
 );

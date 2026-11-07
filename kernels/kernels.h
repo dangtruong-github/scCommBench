@@ -13,8 +13,19 @@
 
 #include "../utils.h"
 
+void mpi_impl(
+    const MKL_INT N, const MKL_INT M_local,
+    const MKL_INT M_global, const int rank,
+    const int world_size, const int d, const int n_iter,
+    const MKL_INT *row_ptr, const MKL_INT *col_ind,
+    const double *values, double *Dist_matrix,
+    float *block_power_time, float *knn_time,
+    bool print_result, const unsigned int seed
+);
 void naive_seq_lib_baseline(
-    const MKL_INT N, const MKL_INT M, const int d, const int n_iter,
+    const MKL_INT N, const MKL_INT M_local,
+    const MKL_INT M_global, const int rank,
+    const int world_size, const int d, const int n_iter,
     const MKL_INT *row_ptr, const MKL_INT *col_ind,
     const double *values, double *Dist_matrix,
     float *block_power_time, float *knn_time,
