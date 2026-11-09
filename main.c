@@ -17,7 +17,7 @@ int main(int argc, char *argv[]) {
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-// Default hyperparameters
+    // Default hyperparameters
     int d = 5;
     int n_iter = 100;
     int num_K_nbs = 100;
