@@ -17,9 +17,10 @@ int main(int argc, char *argv[]) {
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-    // Default hyperparameters
+// Default hyperparameters
     int d = 5;
-    int n_iter = 10;
+    int n_iter = 100;
+    int num_K_nbs = 100;
     unsigned int seed = 42;
     const char *read_prefix = "data/hgdp.qc.pruned";
     const char *save_path = "data/hgdp.qc.pruned.bin";
@@ -30,6 +31,8 @@ int main(int argc, char *argv[]) {
             d = atoi(argv[++i]);
         } else if ((strcmp(argv[i], "-n") == 0 || strcmp(argv[i], "--n-iter") == 0) && i + 1 < argc) {
             n_iter = atoi(argv[++i]);
+        } else if ((strcmp(argv[i], "-k") == 0 || strcmp(argv[i], "--num-k-nbs") == 0) && i + 1 < argc) {
+            num_K_nbs = atoi(argv[++i]);
         } else if ((strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "--seed") == 0) && i + 1 < argc) {
             seed = (unsigned int)strtoul(argv[++i], NULL, 10);
         } else if ((strcmp(argv[i], "-r") == 0 || strcmp(argv[i], "--read") == 0) && i + 1 < argc) {
@@ -73,9 +76,9 @@ int main(int argc, char *argv[]) {
 
     int run_mode_err = run_mode(
         N, M_local, M_global, rank,
-        world_size, d, n_iter, seed,
-        row_ptr, col_ind, values,
-        mpi_impl, save_path
+        world_size, d, n_iter, num_K_nbs,
+        seed, row_ptr, col_ind,
+        values, mpi_impl, save_path
     );
 
     if (run_mode_err) {

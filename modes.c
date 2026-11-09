@@ -53,12 +53,12 @@ int compare_mode(
 int run_mode(
     const MKL_INT N, const MKL_INT M_local,
     const MKL_INT M_global, const int rank,
-    const int world_size, const int d, const int n_iter,
-    const unsigned int seed, const MKL_INT *row_ptr,
+    const int world_size, const int d,
+    const int n_iter, const unsigned int seed,
+    const MKL_INT num_K_nbs, const MKL_INT *row_ptr,
     const MKL_INT *col_ind, const double *values,
     algo_func_t func1, const char *save_path
 ) {
-    const MKL_INT num_K_nbs = 100;
     MKL_INT N_start, N_end;
     get_start_end(N, rank, world_size, &N_start, &N_end);
     const MKL_INT N_local = N_end - N_start; 
