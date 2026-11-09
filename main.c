@@ -76,8 +76,8 @@ int main(int argc, char *argv[]) {
 
     int run_mode_err = run_mode(
         N, M_local, M_global, rank,
-        world_size, d, n_iter, num_K_nbs,
-        seed, row_ptr, col_ind,
+        world_size, d, n_iter, seed,
+        num_K_nbs, row_ptr, col_ind,
         values, mpi_impl, save_path
     );
 
