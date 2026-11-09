@@ -58,14 +58,15 @@ int run_mode(
     const MKL_INT *col_ind, const double *values,
     algo_func_t func1, const char *save_path
 ) {
+    const MKL_INT num_K_nbs = 100;
     // Allocate output matrix D_final (N x d)
-    double *Dist_matrix = (double*)aligned_alloc_64((size_t)N * N * sizeof(double));
+    MKL_INT *K_nb = (MKL_INT*)aligned_alloc_64((size_t)N * num_K_nbs * sizeof(MKL_INT));
     float block_power_time, knn_time;
 
     func1(
         N, M_local, M_global, rank, world_size,
-        d, n_iter, row_ptr, col_ind, values,
-        Dist_matrix, &block_power_time,
+        d, n_iter, num_K_nbs, row_ptr, col_ind,
+        values, K_nb, &block_power_time,
         &knn_time, rank == 0, seed
     );
     printf("Total computation completed in: %.4f seconds of save_path=%s\n\n",
@@ -74,10 +75,10 @@ int run_mode(
 
     int save_err = save_dist_mat_bin_mpi(
         save_path, N, seed, d, n_iter,
-        Dist_matrix, rank, world_size
+        num_K_nbs, K_nb, rank, world_size
     );
 
-    mkl_free(Dist_matrix);
+    mkl_free(K_nb);
 
     return save_err;
 }

@@ -88,26 +88,51 @@ def block_power_iteration(X: sp.csr_matrix, z: int, n_iter: int = 20, random_sta
     return Z_final
 
 
-def knn_dist_mat(Z_data: np.ndarray) -> np.ndarray:
-    """Computes pair-wise Euclidean distance matrix for embedding Z_data."""
+def extract_knn_indices(Z_data: np.ndarray, num_K_nbs: int) -> np.ndarray:
+    """
+    Computes K-nearest neighbor indices matrix (N x num_K_nbs) for embedding Z_data.
+    Indices per row are sorted ascending by distance and cast to int32.
+    """
+    N = Z_data.shape[0]
+    actual_k = min(num_K_nbs, N)
+
+    # 1. Compute pairwise squared Euclidean distances
     sq_norms = np.sum(Z_data**2, axis=1)
-    D_numpy = np.sqrt(np.maximum(0, sq_norms[:, None] + sq_norms[None, :] - 2 * (Z_data @ Z_data.T)))
-    return D_numpy
+    D_sq = np.maximum(0.0, sq_norms[:, None] + sq_norms[None, :] - 2.0 * (Z_data @ Z_data.T))
+
+    # 2. Extract top-K smallest values per row in O(N) using argpartition
+    top_k_partition = np.argpartition(D_sq, actual_k - 1, axis=1)[:, :actual_k]
+
+    # 3. Sort partition indices ascending by distance
+    row_indices = np.arange(N)[:, None]
+    partition_dists = D_sq[row_indices, top_k_partition]
+    sorted_order = np.argsort(partition_dists, axis=1)
+
+    K_nbs = top_k_partition[row_indices, sorted_order]
+
+    # 4. Pad with -1 if num_K_nbs exceeds sample size N
+    if num_K_nbs > actual_k:
+        padding = np.full((N, num_K_nbs - actual_k), -1, dtype=np.int32)
+        K_nbs = np.hstack([K_nbs, padding])
+
+    return K_nbs.astype(np.int32)
 
 
-def save_dist_mat_bin(file_path: str, N: int, seed: int, d: int, n_iter: int, dist_matrix: np.ndarray):
+def save_knn_bin(file_path: str, N: int, seed: int, d: int, n_iter: int, num_K_nbs: int, K_nbs: np.ndarray):
     """
-    Saves the distance matrix into binary format.
-    Header (16 bytes): N (int32), seed (uint32), d (int32), n_iter (int32)
-    Data: N x N float64 matrix
+    Saves the K-nearest neighbor indices matrix into binary format with 32-bit integers.
+    Header (20 bytes): N (int32), seed (uint32), d (int32), n_iter (int32), num_K_nbs (int32)
+    Data: N x num_K_nbs int32 matrix
     """
-    header = struct.pack("iIii", N, seed, d, n_iter)
+    header = struct.pack("iIiii", N, seed, d, n_iter, num_K_nbs)
     with open(file_path, "wb") as f:
         f.write(header)
-        dist_matrix.astype(np.float64).tofile(f)
+        K_nbs.astype(np.int32).tofile(f)
 
 
-def generate_and_save_distance_matrix(prefix: str, output_path: str, d: int, n_iter: int, seed: int, N_override: int = None):
+def generate_and_save_knn_matrix(
+    prefix: str, output_path: str, d: int, n_iter: int, seed: int, num_K_nbs: int, N_override: int = None
+):
     print("=== 1. Loading PLINK Input Data ===")
     X_sparse = load_plink_csr(prefix, N_limit=N_override)
     N, M = X_sparse.shape
@@ -115,31 +140,33 @@ def generate_and_save_distance_matrix(prefix: str, output_path: str, d: int, n_i
     print(f"  Shape (N,M) : ({N}, {M})")
     print(f"  Non-zeros   : {X_sparse.nnz}\n")
 
-    print("=== 2. Running Block Power Iteration & Distance Matrix Computation ===")
-    print(f"  Parameters  : d={d}, n_iter={n_iter}, seed={seed}")
+    print("=== 2. Running Block Power Iteration & Extracting K-Nearest Neighbors ===")
+    print(f"  Parameters  : d={d}, n_iter={n_iter}, seed={seed}, K={num_K_nbs}")
     Z_py = block_power_iteration(X_sparse, z=d, n_iter=n_iter, random_state=seed)
-    D_py = knn_dist_mat(Z_py)
+    K_nbs_py = extract_knn_indices(Z_py, num_K_nbs=num_K_nbs)
 
     print("\n=== 3. Saving Binary Output Matrix ===")
-    save_dist_mat_bin(output_path, N=N, seed=seed, d=d, n_iter=n_iter, dist_matrix=D_py)
-    print(f"  Successfully saved binary distance matrix to: {output_path}")
+    save_knn_bin(output_path, N=N, seed=seed, d=d, n_iter=n_iter, num_K_nbs=num_K_nbs, K_nbs=K_nbs_py)
+    print(f"  Successfully saved binary K-nearest neighbor indices (int32) to: {output_path}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate and save binary distance matrix from PLINK files.")
+    parser = argparse.ArgumentParser(description="Generate and save binary KNN index matrix from PLINK files.")
     parser.add_argument("-r", "--read", type=str, default="data/hgdp.qc.pruned", help="PLINK prefix (reads .bed, .bim, .fam)")
-    parser.add_argument("-o", "--save", type=str, default="data/dist_out.bin", help="Output path for binary distance matrix")
+    parser.add_argument("-o", "--save", type=str, default="data/knn_out.bin", help="Output path for binary KNN index matrix")
     parser.add_argument("-d", "--dim", type=int, default=5, help="Embedding dimension d")
     parser.add_argument("-n", "--n-iters", type=int, default=1000, help="Number of power iterations")
     parser.add_argument("-s", "--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("-k", "--k-neighbors", type=int, default=100, help="Number of nearest neighbors (K) to extract")
     parser.add_argument("-N", "--num-samples", type=int, default=None, help="Optional sample limit N")
 
     args = parser.parse_args()
-    generate_and_save_distance_matrix(
+    generate_and_save_knn_matrix(
         prefix=args.read,
         output_path=args.save,
         d=args.dim,
         n_iter=args.n_iters,
         seed=args.seed,
+        num_K_nbs=args.k_neighbors,
         N_override=args.num_samples,
     )

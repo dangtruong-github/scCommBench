@@ -75,7 +75,7 @@ int main(int argc, char *argv[]) {
         N, M_local, M_global, rank,
         world_size, d, n_iter, seed,
         row_ptr, col_ind, values,
-        mpi_impl, save_path
+        naive_seq_lib_baseline, save_path
     );
 
     if (run_mode_err) {

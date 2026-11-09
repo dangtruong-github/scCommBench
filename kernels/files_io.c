@@ -2,6 +2,7 @@
 
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/types.h>
 
 #include "kernels.h"
 
@@ -152,16 +153,18 @@ int load_plink_partition_mpi(
 int save_dist_mat_bin_mpi(
     const char *file_path, const MKL_INT N,
     const unsigned int seed, const int d,
-    const int n_iter, const double *Dist_local,
-    const int rank, const int world_size
+    const int n_iter, const MKL_INT num_K_nbs,
+    const MKL_INT *K_nb, const int rank, const int world_size
 ) {
     MKL_INT N_start, N_end;
     get_start_end(N, rank, world_size, &N_start, &N_end);
 
     MKL_INT N_local = N_end - N_start;
-    size_t header_size = sizeof(MKL_INT) + sizeof(unsigned int) + 2 * sizeof(int);
+    
+    // Header format: N (int32_t), seed (uint32_t), d (int32_t), n_iter (int32_t), num_K_nbs (int32_t)
+    size_t header_size = 5 * sizeof(int32_t); // 20 bytes
 
-    // 1. Rank 0 creates/truncates file and writes binary header
+    // 1. Rank 0 creates/truncates file and writes 32-bit binary header
     if (rank == 0) {
         int fd = open(file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (fd < 0) {
@@ -169,12 +172,19 @@ int save_dist_mat_bin_mpi(
             return 1;
         }
 
-        char header_buf[128];
+        int32_t N_32          = (int32_t)N;
+        uint32_t seed_32      = (uint32_t)seed;
+        int32_t d_32          = (int32_t)d;
+        int32_t n_iter_32     = (int32_t)n_iter;
+        int32_t num_K_nbs_32  = (int32_t)num_K_nbs;
+
+        char header_buf[32];
         char *ptr = header_buf;
-        memcpy(ptr, &N, sizeof(MKL_INT));            ptr += sizeof(MKL_INT);
-        memcpy(ptr, &seed, sizeof(unsigned int));    ptr += sizeof(unsigned int);
-        memcpy(ptr, &d, sizeof(int));                ptr += sizeof(int);
-        memcpy(ptr, &n_iter, sizeof(int));
+        memcpy(ptr, &N_32,         sizeof(int32_t));   ptr += sizeof(int32_t);
+        memcpy(ptr, &seed_32,      sizeof(uint32_t));  ptr += sizeof(uint32_t);
+        memcpy(ptr, &d_32,         sizeof(int32_t));   ptr += sizeof(int32_t);
+        memcpy(ptr, &n_iter_32,    sizeof(int32_t));   ptr += sizeof(int32_t);
+        memcpy(ptr, &num_K_nbs_32, sizeof(int32_t));
 
         if (write(fd, header_buf, header_size) != (ssize_t)header_size) {
             perror("Error writing header");
@@ -187,19 +197,33 @@ int save_dist_mat_bin_mpi(
     // Wait until Rank 0 finishes creating the file and writing the header
     MPI_Barrier(MPI_COMM_WORLD);
 
-    // 2. Open file for parallel writing on all ranks
-    int fd = open(file_path, O_WRONLY);
-    if (fd < 0) {
-        fprintf(stderr, "Rank %d failed opening file for pwrite\n", rank);
+    // 2. Convert local MKL_INT indices to int32_t buffer for binary output
+    size_t total_elements = (size_t)N_local * num_K_nbs;
+    int32_t *K_nb_32 = (int32_t *)malloc(total_elements * sizeof(int32_t));
+    if (!K_nb_32 && total_elements > 0) {
+        fprintf(stderr, "Rank %d failed to allocate int32_t conversion buffer\n", rank);
         return 1;
     }
 
-    // 3. Compute target file offset and perform offset-based write
-    off_t target_offset = (off_t)header_size + ((off_t)N_start * N * sizeof(double));
-    size_t total_bytes  = (size_t)N_local * N * sizeof(double);
+    #pragma omp parallel for schedule(static)
+    for (size_t i = 0; i < total_elements; ++i) {
+        K_nb_32[i] = (int32_t)K_nb[i];
+    }
+
+    // 3. Open file for parallel writing on all ranks
+    int fd = open(file_path, O_WRONLY);
+    if (fd < 0) {
+        fprintf(stderr, "Rank %d failed opening file for pwrite\n", rank);
+        free(K_nb_32);
+        return 1;
+    }
+
+    // 4. Compute target file offset and perform offset-based write
+    off_t target_offset = (off_t)header_size + ((off_t)N_start * num_K_nbs * sizeof(int32_t));
+    size_t total_bytes  = total_elements * sizeof(int32_t);
 
     size_t bytes_written = 0;
-    const char *byte_ptr = (const char *)Dist_local;
+    const char *byte_ptr = (const char *)K_nb_32;
 
     while (bytes_written < total_bytes) {
         ssize_t ret = pwrite(
@@ -211,15 +235,17 @@ int save_dist_mat_bin_mpi(
         if (ret <= 0) {
             fprintf(stderr, "Rank %d error writing payload at offset %ld\n", rank, target_offset);
             close(fd);
+            free(K_nb_32);
             return 1;
         }
         bytes_written += ret;
     }
 
     close(fd);
+    free(K_nb_32);
 
     if (rank == 0) {
-        printf("Successfully saved distributed matrix via POSIX pwrite to %s\n", file_path);
+        printf("Successfully saved distributed K-nearest neighbor indices (int32_t) to %s\n", file_path);
     }
     return 0;
 }

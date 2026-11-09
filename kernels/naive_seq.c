@@ -179,20 +179,75 @@ void block_power_iter(
 }
 
 
+#include <mkl.h>
+#include <omp.h>
+#include <stdlib.h>
+
+typedef struct {
+    double dist_sq;
+    MKL_INT index;
+} DistPair;
+
+// Standard binary max-heap sift-down
+static inline void heapify_down(DistPair *heap, MKL_INT size, MKL_INT idx) {
+    while (1) {
+        MKL_INT largest = idx;
+        MKL_INT left = 2 * idx + 1;
+        MKL_INT right = 2 * idx + 2;
+
+        if (left < size && heap[left].dist_sq > heap[largest].dist_sq) {
+            largest = left;
+        }
+        if (right < size && heap[right].dist_sq > heap[largest].dist_sq) {
+            largest = right;
+        }
+        if (largest == idx) break;
+
+        DistPair tmp = heap[idx];
+        heap[idx] = heap[largest];
+        heap[largest] = tmp;
+
+        idx = largest;
+    }
+}
+
+// Standard binary max-heap sift-up
+static inline void heapify_up(DistPair *heap, MKL_INT idx) {
+    while (idx > 0) {
+        MKL_INT parent = (idx - 1) / 2;
+        if (heap[idx].dist_sq > heap[parent].dist_sq) {
+            DistPair tmp = heap[idx];
+            heap[idx] = heap[parent];
+            heap[parent] = tmp;
+            idx = parent;
+        } else {
+            break;
+        }
+    }
+}
+
 /**
- * Computes the N x N pairwise Euclidean distance matrix for D_final (N x d).
+ * Computes memory-efficient K-nearest neighbor indices for D_final (N x d) in pure C.
  *
  * Parameters:
- *   N         : Number of samples (rows)
- *   d         : Feature dimension (cols)
- *   D_final   : Input matrix of shape (N, d)
- *   Dist      : Output distance matrix of shape (N, N) [Pre-allocated]
+ *   N          : Number of samples (rows)
+ *   d          : Feature dimension (cols)
+ *   D_final    : Input matrix of shape (N, d)
+ *   K_nbs      : Output matrix of neighbor indices of shape (N, num_K_nbs) [Pre-allocated]
+ *   num_K_nbs  : Number of nearest neighbors (K) to extract per sample
  */
-void compute_pairwise_distances(MKL_INT N, int d, const double *D_final, double *Dist) {
-    // 1. Compute squared row norms: S[i] = sum_k (D[i, k]^2)
-    double *sq_norms = (double*)aligned_alloc_64(N * sizeof(double));
-    
-    #pragma omp parallel for
+void knn_extract(
+    const MKL_INT N, const int d, const MKL_INT num_K_nbs,
+    const double *D_final, MKL_INT *K_nbs
+) {
+    if (N <= 0 || num_K_nbs <= 0) return;
+
+    MKL_INT actual_k = (num_K_nbs < N) ? num_K_nbs : N;
+
+    // 1. Compute squared row norms: sq_norms[i] = sum_k (D[i, k]^2)
+    double *sq_norms = (double*)mkl_malloc(N * sizeof(double), 64);
+
+    #pragma omp parallel for schedule(static)
     for (MKL_INT i = 0; i < N; ++i) {
         double norm_sq = 0.0;
         for (int k = 0; k < d; ++k) {
@@ -202,24 +257,73 @@ void compute_pairwise_distances(MKL_INT N, int d, const double *D_final, double 
         sq_norms[i] = norm_sq;
     }
 
-    // 2. Gram Matrix G = D_final * D_final^T via Intel MKL cblas_dgemm
-    //    Dist matrix temporarily stores the dot products G[i, j]
-    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                N, N, d,
-                1.0, D_final, d,
-                D_final, d,
-                0.0, Dist, N);
+    // 2. Row Tiling: Memory footprint capped to (TILE_SIZE x N)
+    const MKL_INT TILE_SIZE = 1024;
+    double *Dist_block = (double*)mkl_malloc(TILE_SIZE * N * sizeof(double), 64);
 
-    // 3. Convert Gram Matrix to Euclidean Distances: sqrt(max(0, S[i] + S[j] - 2*G[i, j]))
-    #pragma omp parallel for collapse(2)
-    for (MKL_INT i = 0; i < N; ++i) {
-        for (MKL_INT j = 0; j < N; ++j) {
-            double g_ij = Dist[i * N + j];
-            double d_sq = sq_norms[i] + sq_norms[j] - 2.0 * g_ij;
-            Dist[i * N + j] = (d_sq > 0.0) ? sqrt(d_sq) : 0.0;
+    for (MKL_INT block_start = 0; block_start < N; block_start += TILE_SIZE) {
+        MKL_INT B_curr = (TILE_SIZE < N - block_start) ? TILE_SIZE : (N - block_start);
+        const double *D_block = D_final + block_start * d;
+
+        // Compute sub-matrix Gram products G_block (B_curr x N) = D_block (B_curr x d) * D_final^T (d x N)
+        cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                    B_curr, N, d,
+                    1.0, D_block, d,
+                    D_final, d,
+                    0.0, Dist_block, N);
+
+        // 3. Extract Top-K Nearest Neighbors per row using thread-local max-heaps
+        #pragma omp parallel
+        {
+            DistPair *heap = (DistPair*)malloc(actual_k * sizeof(DistPair));
+
+            #pragma omp for schedule(dynamic)
+            for (MKL_INT r = 0; r < B_curr; ++r) {
+                MKL_INT i = block_start + r;
+                const double *G_row = Dist_block + r * N;
+                double sq_norm_i = sq_norms[i];
+
+                MKL_INT heap_size = 0;
+
+                for (MKL_INT j = 0; j < N; ++j) {
+                    double g_ij = G_row[j];
+                    double d_sq = sq_norm_i + sq_norms[j] - 2.0 * g_ij;
+                    if (d_sq < 0.0) d_sq = 0.0;
+
+                    if (heap_size < actual_k) {
+                        heap[heap_size].dist_sq = d_sq;
+                        heap[heap_size].index = j;
+                        heapify_up(heap, heap_size);
+                        heap_size++;
+                    } else if (d_sq < heap[0].dist_sq) {
+                        heap[0].dist_sq = d_sq;
+                        heap[0].index = j;
+                        heapify_down(heap, actual_k, 0);
+                    }
+                }
+
+                // Extract sorted indices from heap into output (nearest first)
+                MKL_INT current_heap_size = actual_k;
+                for (MKL_INT k = actual_k - 1; k >= 0; --k) {
+                    K_nbs[i * num_K_nbs + k] = heap[0].index;
+                    heap[0] = heap[current_heap_size - 1];
+                    current_heap_size--;
+                    if (current_heap_size > 0) {
+                        heapify_down(heap, current_heap_size, 0);
+                    }
+                }
+
+                // Fill padding if num_K_nbs > N
+                for (MKL_INT k = actual_k; k < num_K_nbs; ++k) {
+                    K_nbs[i * num_K_nbs + k] = -1;
+                }
+            }
+
+            free(heap);
         }
     }
 
+    mkl_free(Dist_block);
     mkl_free(sq_norms);
 }
 
@@ -227,9 +331,9 @@ void naive_seq_lib_baseline(
     const MKL_INT N, const MKL_INT M_local,
     const MKL_INT M_global, const int rank,
     const int world_size, const int d, const int n_iter,
-    const MKL_INT *row_ptr, const MKL_INT *col_ind,
-    const double *values, double *Dist_matrix,
-    float *block_power_time, float *knn_time,
+    const MKL_INT num_K_nbs, const MKL_INT *row_ptr,
+    const MKL_INT *col_ind, const double *values,
+    MKL_INT *K_nb, float *block_power_time, float *knn_time,
     bool print_result, const unsigned int seed
 ) {
     printf("M_global=%d, rank=%d, world_size=%d\n", M_global, rank, world_size);
@@ -260,17 +364,17 @@ void naive_seq_lib_baseline(
     printf("=== Computing Pairwise Distance Matrix (%lld x %lld) ===\n", (long long)N, (long long)N);
 
     cpu_timer_init(&timer, "KNN", print_result);
-    compute_pairwise_distances(N, d, D_final, Dist_matrix);
+    knn_extract(N, d, num_K_nbs, D_final, K_nb);
     *knn_time = cpu_timer_destroy(&timer);
 
     printf("Distance matrix computation completed in: %.4f seconds\n\n", *knn_time);
 
     // 4. Print Results Summary
-    printf("Top 5x5 Submatrix of Pairwise Distances:\n");
+    printf("Top 5x5 Submatrix of K neighbor indices:\n");
     for (int i = 0; i < 5; ++i) {
         printf("Row %d: [", i);
         for (int j = 0; j < 5; ++j) {
-            printf("%8.8f%s", Dist_matrix[i * N + j], (j == 4) ? "" : ", ");
+            printf("%lld%s", (long long)K_nb[i * num_K_nbs + j], (j == 4) ? "" : ", ");
         }
         printf("]\n");
     }

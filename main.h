@@ -6,8 +6,9 @@
 typedef void (*algo_func_t)(
     const MKL_INT, const MKL_INT, const MKL_INT,
     const int, const int, const int, const int,
-    const MKL_INT*, const MKL_INT*, const double*,
-    double*, float*, float*, bool, unsigned int
+    const MKL_INT, const MKL_INT*, const MKL_INT*,
+    const double*, MKL_INT*, float*, float*,
+    bool, unsigned int
 );
 
 int run_mode(
