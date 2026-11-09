@@ -158,7 +158,6 @@ int save_dist_mat_bin_mpi(
 ) {
     MKL_INT N_start, N_end;
     get_start_end(N, rank, world_size, &N_start, &N_end);
-
     MKL_INT N_local = N_end - N_start;
     
     // Header format: N (int32_t), seed (uint32_t), d (int32_t), n_iter (int32_t), num_K_nbs (int32_t)

@@ -59,8 +59,12 @@ int run_mode(
     algo_func_t func1, const char *save_path
 ) {
     const MKL_INT num_K_nbs = 100;
+    MKL_INT N_start, N_end;
+    get_start_end(N, rank, world_size, &N_start, &N_end);
+    const MKL_INT N_local = N_end - N_start; 
     // Allocate output matrix D_final (N x d)
-    MKL_INT *K_nb = (MKL_INT*)aligned_alloc_64((size_t)N * num_K_nbs * sizeof(MKL_INT));
+    
+    MKL_INT *K_nb = (MKL_INT*)aligned_alloc_64((size_t)N_local * num_K_nbs * sizeof(MKL_INT));
     float block_power_time, knn_time;
 
     func1(

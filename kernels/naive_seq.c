@@ -178,54 +178,6 @@ void block_power_iter(
     mkl_free(superb);
 }
 
-
-#include <mkl.h>
-#include <omp.h>
-#include <stdlib.h>
-
-typedef struct {
-    double dist_sq;
-    MKL_INT index;
-} DistPair;
-
-// Standard binary max-heap sift-down
-static inline void heapify_down(DistPair *heap, MKL_INT size, MKL_INT idx) {
-    while (1) {
-        MKL_INT largest = idx;
-        MKL_INT left = 2 * idx + 1;
-        MKL_INT right = 2 * idx + 2;
-
-        if (left < size && heap[left].dist_sq > heap[largest].dist_sq) {
-            largest = left;
-        }
-        if (right < size && heap[right].dist_sq > heap[largest].dist_sq) {
-            largest = right;
-        }
-        if (largest == idx) break;
-
-        DistPair tmp = heap[idx];
-        heap[idx] = heap[largest];
-        heap[largest] = tmp;
-
-        idx = largest;
-    }
-}
-
-// Standard binary max-heap sift-up
-static inline void heapify_up(DistPair *heap, MKL_INT idx) {
-    while (idx > 0) {
-        MKL_INT parent = (idx - 1) / 2;
-        if (heap[idx].dist_sq > heap[parent].dist_sq) {
-            DistPair tmp = heap[idx];
-            heap[idx] = heap[parent];
-            heap[parent] = tmp;
-            idx = parent;
-        } else {
-            break;
-        }
-    }
-}
-
 /**
  * Computes memory-efficient K-nearest neighbor indices for D_final (N x d) in pure C.
  *
@@ -245,7 +197,7 @@ void knn_extract(
     MKL_INT actual_k = (num_K_nbs < N) ? num_K_nbs : N;
 
     // 1. Compute squared row norms: sq_norms[i] = sum_k (D[i, k]^2)
-    double *sq_norms = (double*)mkl_malloc(N * sizeof(double), 64);
+    double *sq_norms = (double*)aligned_alloc_64(N * sizeof(double));
 
     #pragma omp parallel for schedule(static)
     for (MKL_INT i = 0; i < N; ++i) {
@@ -259,7 +211,7 @@ void knn_extract(
 
     // 2. Row Tiling: Memory footprint capped to (TILE_SIZE x N)
     const MKL_INT TILE_SIZE = 1024;
-    double *Dist_block = (double*)mkl_malloc(TILE_SIZE * N * sizeof(double), 64);
+    double *Dist_block = (double*)aligned_alloc_64(TILE_SIZE * N * sizeof(double));
 
     for (MKL_INT block_start = 0; block_start < N; block_start += TILE_SIZE) {
         MKL_INT B_curr = (TILE_SIZE < N - block_start) ? TILE_SIZE : (N - block_start);
