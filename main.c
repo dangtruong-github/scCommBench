@@ -19,7 +19,7 @@ int main(int argc, char *argv[]) {
 
     // Default hyperparameters
     int d = 5;
-    int n_iter = 100;
+    int n_iter = 1000;
     int num_K_nbs = 100;
     unsigned int seed = 42;
     const char *read_prefix = "data/hgdp.qc.pruned";
