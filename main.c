@@ -54,6 +54,7 @@ int main(int argc, char *argv[]) {
         printf("Configuration loaded:\n");
         printf("  d           : %d\n", d);
         printf("  n_iter      : %d\n", n_iter);
+        printf("  num_K_nbs   : %d\n", num_K_nbs);
         printf("  seed        : %u\n", seed);
         printf("  read_prefix : %s\n", read_prefix);
         printf("  save_path   : %s\n\n", save_path);
