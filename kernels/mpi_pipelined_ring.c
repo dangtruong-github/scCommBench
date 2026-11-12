@@ -21,7 +21,6 @@ static uint32_t get_each_buf_size(
     for (int i = 0; i < world_size; i++) {
         uint32_t blocks = base_blocks + (i < rem ? 1 : 0);
         buf_each[i] = blocks * elems_per_block;
-        printf("buf_each[%d] = %d\n", i, buf_each[i]);
 
         if (i == 0) {
             buf_agg_size[i] = 0;
@@ -200,7 +199,6 @@ void block_power_iter_pipelined_ring(
 
         // Step 3b: AllReduce Gram Matrix (G_global = sum(G_local))
         cpu_timer_init(&timer, "Step 3b: AllReduce Gram Matrix", print_time);
-        MPI_Allreduce(MPI_IN_PLACE, Vt_R, d * d, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         PipelineRingAllReduce(Vt_R, U, buf_each_sm, buf_agg_sm, rank, world_size);
         cpu_timer_destroy(&timer);
 
