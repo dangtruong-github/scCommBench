@@ -11,7 +11,16 @@ typedef struct {
     MKL_INT index;
 } DistPair;
 
-void mpi_impl(
+void mpi_baseline(
+    const MKL_INT N, const MKL_INT M_local,
+    const MKL_INT M_global, const int rank,
+    const int world_size, const int d, const int n_iter,
+    const MKL_INT num_K_nbs, const MKL_INT *row_ptr,
+    const MKL_INT *col_ind, const double *values,
+    MKL_INT *K_nb, double *block_power_time, double *knn_time,
+    bool print_result, const unsigned int seed
+);
+void mpi_pipelined_ring(
     const MKL_INT N, const MKL_INT M_local,
     const MKL_INT M_global, const int rank,
     const int world_size, const int d, const int n_iter,

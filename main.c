@@ -85,7 +85,7 @@ int main(int argc, char *argv[]) {
         N, M_local, M_global, rank,
         world_size, d, n_iter, seed,
         num_K_nbs, row_ptr, col_ind,
-        values, mpi_impl, save_path,
+        values, mpi_pipelined_ring, save_path,
         &block_power_time, &knn_time,
         &save_time
     );
@@ -121,7 +121,7 @@ int main(int argc, char *argv[]) {
         printf("Total Application FLOPs : %.3e (%.2f GFLOP/s)\n", 
            total_flops, (total_flops / total_exec_time) / 1e9
         );
-        printf("Maximum Execution Time: %4f\n", total_exec_time);
+        printf("Maximum Execution Time: %4f seconds\n", total_exec_time);
     }
 
     MPI_Win_free(&win);

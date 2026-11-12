@@ -112,6 +112,7 @@ double cpu_timer_destroy(CPUTimer *timer) {
         printf("[%s] Elapsed time: %.6f seconds\n", 
                timer->function_name ? timer->function_name : "Timer", 
                elapsed);
+        fflush(NULL);
     }
     
     return elapsed;

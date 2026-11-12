@@ -1,5 +1,111 @@
 #include "kernels.h"
 
+static uint32_t get_each_buf_size(
+    const uint32_t size_buf_total, const int world_size,
+    uint32_t *buf_each, uint32_t *buf_agg_size
+) {
+    if (world_size <= 0 || buf_each == NULL) {
+        return 0;
+    }
+
+    // 64 bytes / sizeof(double) = 8 doubles per 64-byte cache line
+    const uint32_t elems_per_block = 64 / sizeof(double);
+
+    // 1. Round total element count up to the nearest 8-double (64-byte) block
+    uint64_t total_blocks = ((uint64_t)size_buf_total + elems_per_block - 1) / elems_per_block;
+
+    // 2. Distribute 64-byte blocks as evenly as possible across ranks
+    uint32_t base_blocks = (uint32_t)(total_blocks / world_size);
+    uint32_t rem = (uint32_t)(total_blocks % world_size);
+
+    for (int i = 0; i < world_size; i++) {
+        uint32_t blocks = base_blocks + (i < rem ? 1 : 0);
+        buf_each[i] = blocks * elems_per_block;
+        printf("buf_each[%d] = %d\n", i, buf_each[i]);
+
+        if (i == 0) {
+            buf_agg_size[i] = 0;
+        } else {
+            buf_agg_size[i] = buf_agg_size[i - 1] + buf_each[i - 1];
+        }
+    }
+
+    // Return max number of doubles in buf_each
+    return (base_blocks + (rem > 0 ? 1 : 0)) * elems_per_block;
+}
+
+void PipelineRingAllReduceLarge(
+    double *recv_buf, double *tmp_buf, const uint32_t *buf_each,
+    const uint32_t *buf_agg, const int rank, const int world_size
+) {
+    // Pass 1: Reduce
+    int send_buf_id = (rank + 1) % world_size;
+    int recv_buf_id = rank;
+    const int send_rank = send_buf_id;
+    const int recv_rank = (rank + world_size - 1) % world_size;
+    int tag_send = rank * (world_size - 1);
+    int tag_recv = recv_rank * (world_size - 1);
+    MPI_Request reqs[2];
+
+    for (int i = 0; i < world_size - 1; ++i) {
+        size_t num_send = buf_each[send_buf_id];
+        size_t offset_send = buf_agg[send_buf_id];
+        size_t num_recv = buf_each[recv_buf_id];
+        size_t offset_recv = buf_agg[recv_buf_id];
+
+        MPI_Irecv(
+            tmp_buf, num_recv, MPI_DOUBLE, recv_rank,
+            tag_recv + i, MPI_COMM_WORLD, &reqs[0]
+        );
+
+        MPI_Isend(
+            (char *)(recv_buf + offset_send),
+            num_send, MPI_DOUBLE, send_rank,
+            tag_send + i, MPI_COMM_WORLD, &reqs[1]
+        );
+
+        MPI_Wait(&reqs[0], MPI_STATUS_IGNORE);
+
+        #pragma omp parallel for simd
+        for (size_t j = 0; j < num_recv; ++j) {
+            recv_buf[offset_recv + j] += tmp_buf[j];
+        }
+
+        MPI_Wait(&reqs[1], MPI_STATUS_IGNORE);
+
+        send_buf_id = (send_buf_id + world_size - 1) % world_size;
+        recv_buf_id = (recv_buf_id + world_size - 1) % world_size;
+    }
+
+    tag_send += world_size * (world_size - 1);
+    tag_recv += world_size * (world_size - 1);
+
+    // Pass 2: Gather
+    for (int i = 0; i < world_size - 1; ++i) {
+        size_t num_send = buf_each[send_buf_id];
+        size_t offset_send = buf_agg[send_buf_id] * sizeof(double);
+        size_t num_recv = buf_each[recv_buf_id];
+        size_t offset_recv = buf_agg[recv_buf_id] * sizeof(double);
+
+        MPI_Irecv(
+            (char *)(recv_buf) + offset_recv,
+            num_recv, MPI_DOUBLE, recv_rank,
+            tag_recv + i, MPI_COMM_WORLD, &reqs[0]
+        );
+
+        MPI_Isend(
+            (const char *)(recv_buf) + offset_send,
+            num_send, MPI_DOUBLE, send_rank,
+            tag_send + i, MPI_COMM_WORLD, &reqs[1]
+        );
+
+        MPI_Wait(&reqs[0], MPI_STATUS_IGNORE);
+        MPI_Wait(&reqs[1], MPI_STATUS_IGNORE);
+
+        send_buf_id = (send_buf_id + world_size - 1) % world_size;
+        recv_buf_id = (recv_buf_id + world_size - 1) % world_size;
+    }
+}
 
 static void svd_flip_mpi(MKL_INT N, MKL_INT M, MKL_INT d, 
                      double *U, double *Vh, double *V_final) {
@@ -58,12 +164,12 @@ static void svd_flip_mpi(MKL_INT N, MKL_INT M, MKL_INT d,
  *   Vh_final     : Right singular vectors transposed (d x M), Row-Major
  *   D_final      : Reconstructed product X @ Vh_final.T (N x d), Row-Major
  */
-void block_power_iter_mpi(
+void block_power_iter_pipelined_ring(
     const MKL_INT N, const MKL_INT M_local, const int d,
     const int n_iter, const MKL_INT *row_ptr,
     const MKL_INT *col_ind, const double *values,
     double *D_final, unsigned int random_state,
-    bool print_time
+    const int rank, const int world_size, bool print_time
 ) {
     CPUTimer timer;
 
@@ -94,6 +200,9 @@ void block_power_iter_mpi(
     double *S        = (double*)aligned_alloc_64(d * sizeof(double));
     double *Vh_final = (double*)aligned_alloc_64(d * M_local * sizeof(double));
 
+    uint32_t buf_each_Nd[world_size], buf_agg_Nd[world_size];
+    uint32_t max_buf_Nd = get_each_buf_size(N * d, world_size, buf_each_Nd, buf_agg_Nd);
+
     // 3. Initialize random matrix V of size M x d with standard Gaussian noise
     VSLStreamStatePtr stream;
     vslNewStream(&stream, VSL_BRNG_MT19937, random_state);
@@ -109,12 +218,12 @@ void block_power_iter_mpi(
         // Step 1a: Local Forward SpMM (D_temp = X_local @ V_local)
         cpu_timer_init(&timer, "Step 1a: Local Forward SpMM", print_time);
         mkl_sparse_d_mm(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, X_handle, descr,
-                        SPARSE_LAYOUT_ROW_MAJOR, V, d, d, 0.0, D_temp, d);
+                        SPARSE_LAYOUT_ROW_MAJOR, V, d, d, 0.0, U, d);
         cpu_timer_destroy(&timer);
 
         // Step 1b: AllReduce Forward Pass (U = sum(D_temp))
         cpu_timer_init(&timer, "Step 1b: AllReduce Forward Pass", print_time);
-        MPI_Allreduce(D_temp, U, N * d, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        PipelineRingAllReduceLarge(U, D_temp, buf_each_Nd, buf_agg_Nd, rank, world_size);
         cpu_timer_destroy(&timer);
 
         // Step 2: Local Backward SpMM (W_local = X_local^T @ U)
@@ -136,6 +245,7 @@ void block_power_iter_mpi(
 
         // Step 3b: AllReduce Gram Matrix (G_global = sum(G_local))
         cpu_timer_init(&timer, "Step 3b: AllReduce Gram Matrix", print_time);
+        // PipelineRingAllReduceInPlace(Vt_R, d * d, rank, world_size);
         MPI_Allreduce(MPI_IN_PLACE, Vt_R, d * d, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         cpu_timer_destroy(&timer);
 
@@ -155,19 +265,17 @@ void block_power_iter_mpi(
         );
         memcpy(V, W, M_local * d * sizeof(double));
         cpu_timer_destroy(&timer);
-
-        memcpy(V, W, M_local * d * sizeof(double));
     }
 
     // Step 5a: Local Rayleigh-Ritz SpMM (U = X_local @ V_local)
     cpu_timer_init(&timer, "Step 5a: Local Rayleigh-Ritz SpMM", print_time);
     mkl_sparse_d_mm(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, X_handle, descr,
-                    SPARSE_LAYOUT_ROW_MAJOR, V, d, d, 0.0, U, d);
+                    SPARSE_LAYOUT_ROW_MAJOR, V, d, d, 0.0, D_temp, d);
     cpu_timer_destroy(&timer);
 
     // Step 5b: AllReduce Rayleigh-Ritz Pass (D_temp = sum(U))
     cpu_timer_init(&timer, "Step 5b: AllReduce Rayleigh-Ritz Pass", print_time);
-    MPI_Allreduce(U, D_temp, N * d, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    PipelineRingAllReduceLarge(D_temp, U, buf_each_Nd, buf_agg_Nd, rank, world_size);
     cpu_timer_destroy(&timer);
 
     // Step 5c: Thin SVD on Projected Matrix (D_temp -> U_tilde @ S @ V_R_t)
@@ -190,12 +298,12 @@ void block_power_iter_mpi(
     // Step 7a: Local Final Score SpMM (U = X_local @ Vh_final_local^T)
     cpu_timer_init(&timer, "Step 7a: Local Final Score SpMM", print_time);
     mkl_sparse_d_mm(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, X_handle, descr,
-                    SPARSE_LAYOUT_ROW_MAJOR, W, d, d, 0.0, U, d);
+                    SPARSE_LAYOUT_ROW_MAJOR, W, d, d, 0.0, D_final, d);
     cpu_timer_destroy(&timer);
 
     // Step 7b: AllReduce Final Score Pass (D_final = sum(U))
     cpu_timer_init(&timer, "Step 7b: AllReduce Final Score Pass", print_time);
-    MPI_Allreduce(U, D_final, N * d, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    PipelineRingAllReduceLarge(D_final, U, buf_each_Nd, buf_agg_Nd, rank, world_size);
     cpu_timer_destroy(&timer);
 
     // Cleanup
@@ -222,7 +330,7 @@ void block_power_iter_mpi(
  *   K_nbs      : Output matrix of 32-bit neighbor indices of shape (N_local, num_K_nbs) [Pre-allocated]
  *   num_K_nbs  : Number of nearest neighbors (K) to extract per sample
  */
-void compute_pairwise_distances_mpi(
+void knn_compute_pipelined_ring(
     MKL_INT N, MKL_INT N_start, MKL_INT N_end, int d,
     MKL_INT num_K_nbs, const double *D_final, int32_t *K_nbs
 ) {
@@ -318,7 +426,7 @@ void compute_pairwise_distances_mpi(
     mkl_free(sq_norms);
 }
 
-void mpi_impl(
+void mpi_pipelined_ring(
     const MKL_INT N, const MKL_INT M_local,
     const MKL_INT M_global, const int rank,
     const int world_size, const int d, const int n_iter,
@@ -338,9 +446,10 @@ void mpi_impl(
     printf("=== Running Block Power Iteration (%d iterations, d=%d) of rank=%d ===\n", n_iter, d, rank);
 
     cpu_timer_init(&timer, "Block Power Iteration", print_result);
-    block_power_iter_mpi(
+    block_power_iter_pipelined_ring(
         N, M_local, d, n_iter, row_ptr,
-        col_ind, values, D_final, seed, print_result
+        col_ind, values, D_final, seed,
+        rank, world_size, print_result
     );
     *block_power_time = cpu_timer_destroy(&timer);
 
@@ -352,7 +461,7 @@ void mpi_impl(
     cpu_timer_init(&timer, "KNN", print_result);
     MKL_INT N_start, N_end;
     get_start_end(N, rank, world_size, &N_start, &N_end);
-    compute_pairwise_distances_mpi(N, N_start, N_end, d, num_K_nbs, D_final, K_nb);
+    knn_compute_pipelined_ring(N, N_start, N_end, d, num_K_nbs, D_final, K_nb);
     *knn_time = cpu_timer_destroy(&timer);
 
     printf("Distance matrix computation of rank %d completed in: %.4f seconds\n\n", rank, *knn_time);

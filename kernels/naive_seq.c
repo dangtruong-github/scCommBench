@@ -139,7 +139,6 @@ void block_power_iter(
         );
         cpu_timer_destroy(&timer);
         
-
         memcpy(V, W, M * d * sizeof(double));
     }
 
