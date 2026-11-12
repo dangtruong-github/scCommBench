@@ -17,7 +17,7 @@ void mpi_impl(
     const int world_size, const int d, const int n_iter,
     const MKL_INT num_K_nbs, const MKL_INT *row_ptr,
     const MKL_INT *col_ind, const double *values,
-    MKL_INT *K_nb, float *block_power_time, float *knn_time,
+    MKL_INT *K_nb, double *block_power_time, double *knn_time,
     bool print_result, const unsigned int seed
 );
 void naive_seq_lib_baseline(
@@ -26,7 +26,7 @@ void naive_seq_lib_baseline(
     const int world_size, const int d, const int n_iter,
     const MKL_INT num_K_nbs, const MKL_INT *row_ptr,
     const MKL_INT *col_ind, const double *values,
-    MKL_INT *K_nb, float *block_power_time, float *knn_time,
+    MKL_INT *K_nb, double *block_power_time, double *knn_time,
     bool print_result, const unsigned int seed
 );
 
@@ -71,14 +71,18 @@ static inline void heapify_up(DistPair *heap, MKL_INT idx) {
 // Files I/O methods
 
 int load_plink_partition_mpi(
-    const char *prefix, int rank, int world_size,
-    MKL_INT *out_N, MKL_INT *out_M_local, MKL_INT *out_M_glob,
-    MKL_INT *out_nnz, MKL_INT **out_row_ptr,
-    MKL_INT **out_col_ind, double **out_values
+    const char *prefix, const int rank,
+    const int world_size, double *load_time,
+    MKL_INT *out_N, MKL_INT *out_M_local,
+    MKL_INT *out_M_glob, MKL_INT *out_nnz,
+    MKL_INT **out_row_ptr, MKL_INT **out_col_ind,
+    double **out_values, bool print_time
 );
 int save_dist_mat_bin_mpi(
     const char *file_path, const MKL_INT N,
     const unsigned int seed, const int d,
     const int n_iter, const MKL_INT num_K_nbs,
-    const MKL_INT *K_nb, const int rank, const int world_size
+    const MKL_INT *K_nb, const int rank,
+    const int world_size, double *save_time,
+    bool print_time
 );

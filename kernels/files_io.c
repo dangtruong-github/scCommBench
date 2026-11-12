@@ -32,11 +32,16 @@ static MKL_INT count_file_lines(const char *path) {
 }
 
 int load_plink_partition_mpi(
-    const char *prefix, int rank, int world_size,
-    MKL_INT *out_N, MKL_INT *out_M_local, MKL_INT *out_M_glob,
-    MKL_INT *out_nnz, MKL_INT **out_row_ptr,
-    MKL_INT **out_col_ind, double **out_values
+    const char *prefix, const int rank,
+    const int world_size, double *load_time,
+    MKL_INT *out_N, MKL_INT *out_M_local,
+    MKL_INT *out_M_glob, MKL_INT *out_nnz,
+    MKL_INT **out_row_ptr, MKL_INT **out_col_ind,
+    double **out_values, bool print_time
 ) {
+    CPUTimer timer;
+    cpu_timer_init(&timer, "Load data time", print_time);
+
     char path_buf[512];
     MKL_INT N = 0, M_global = 0;
 
@@ -139,6 +144,7 @@ int load_plink_partition_mpi(
     free(raw_buf);
     free(curr_pos);
 
+    *load_time = cpu_timer_destroy(&timer);
     *out_N = N;
     *out_M_glob = M_global;
     *out_M_local = M_local;
@@ -154,8 +160,13 @@ int save_dist_mat_bin_mpi(
     const char *file_path, const MKL_INT N,
     const unsigned int seed, const int d,
     const int n_iter, const MKL_INT num_K_nbs,
-    const MKL_INT *K_nb, const int rank, const int world_size
+    const MKL_INT *K_nb, const int rank,
+    const int world_size, double *save_time,
+    bool print_time
 ) {
+    CPUTimer timer;
+    cpu_timer_init(&timer, "Save KNN indices", print_time);
+
     MKL_INT N_start, N_end;
     get_start_end(N, rank, world_size, &N_start, &N_end);
     MKL_INT N_local = N_end - N_start;
@@ -246,5 +257,8 @@ int save_dist_mat_bin_mpi(
     if (rank == 0) {
         printf("Successfully saved distributed K-nearest neighbor indices (int32_t) to %s\n", file_path);
     }
+
+    *save_time = cpu_timer_destroy(&timer);
+
     return 0;
 }

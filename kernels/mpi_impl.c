@@ -324,7 +324,7 @@ void mpi_impl(
     const int world_size, const int d, const int n_iter,
     const MKL_INT num_K_nbs, const MKL_INT *row_ptr,
     const MKL_INT *col_ind, const double *values,
-    MKL_INT *K_nb, float *block_power_time, float *knn_time,
+    MKL_INT *K_nb, double *block_power_time, double *knn_time,
     bool print_result, const unsigned int seed
 ) {
     CPUTimer timer;

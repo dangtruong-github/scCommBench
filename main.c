@@ -16,6 +16,8 @@ int main(int argc, char *argv[]) {
     int rank, world_size;
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Win win;
+    MPI_Win_create(NULL, 0, 1, MPI_INFO_NULL, MPI_COMM_WORLD, &win);    
 
     // Default hyperparameters
     int d = 5;
@@ -64,11 +66,14 @@ int main(int argc, char *argv[]) {
     MKL_INT *row_ptr;
     MKL_INT *col_ind;
     double  *values;
+    
+    double load_data_time, block_power_time, knn_time, save_time;
 
     int err_data = load_plink_partition_mpi(
         read_prefix, rank, world_size,
-        &N, &M_local, &M_global, &nnz,
-        &row_ptr, &col_ind, &values
+        &load_data_time, &N, &M_local,
+        &M_global, &nnz, &row_ptr,
+        &col_ind, &values, rank == 0
     );
 
     if (err_data) {
@@ -79,7 +84,9 @@ int main(int argc, char *argv[]) {
         N, M_local, M_global, rank,
         world_size, d, n_iter, seed,
         num_K_nbs, row_ptr, col_ind,
-        values, mpi_impl, save_path
+        values, mpi_impl, save_path,
+        &block_power_time, &knn_time,
+        &save_time
     );
 
     if (run_mode_err) {
@@ -91,6 +98,19 @@ int main(int argc, char *argv[]) {
     free(col_ind);
     free(values);
 
+    MPI_Win_lock(MPI_LOCK_EXCLUSIVE, 0, 0, win);
+    {
+        printf("Timing of rank %d\n", rank);
+        printf("Load data time %.4f\n", load_data_time);
+        printf("Block power iter computation time: %.4f\n", block_power_time);
+        printf("KNN indices computation time: %.4f\n", knn_time);
+        printf("Total computation completed in: %.4f seconds\n", block_power_time + knn_time);
+        printf("Save data time: %.4f seconds\n", save_time);
+        printf("-------------------\n");
+    }
+    MPI_Win_unlock(0, win);
+
+    MPI_Win_free(&win);
     MPI_Finalize();
     return 0;
 }
