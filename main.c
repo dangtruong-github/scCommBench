@@ -86,7 +86,7 @@ int main(int argc, char *argv[]) {
         N, M_local, M_global, rank,
         world_size, d, n_iter, seed,
         num_K_nbs, row_ptr, col_ind,
-        values, mpi_baseline, save_path,
+        values, mpi_pipelined_ring, save_path,
         &block_power_time, &knn_time,
         &save_time
     );
