@@ -17,7 +17,8 @@ int main(int argc, char *argv[]) {
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Win win;
-    MPI_Win_create(NULL, 0, 1, MPI_INFO_NULL, MPI_COMM_WORLD, &win);    
+    void *baseptr;
+    MPI_Win_allocate(0, 1, MPI_INFO_NULL, MPI_COMM_WORLD, &baseptr, &win);
 
     // Default hyperparameters
     int d = 5;
@@ -85,7 +86,7 @@ int main(int argc, char *argv[]) {
         N, M_local, M_global, rank,
         world_size, d, n_iter, seed,
         num_K_nbs, row_ptr, col_ind,
-        values, mpi_pipelined_ring, save_path,
+        values, mpi_baseline, save_path,
         &block_power_time, &knn_time,
         &save_time
     );
