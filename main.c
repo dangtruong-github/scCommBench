@@ -68,6 +68,7 @@ int main(int argc, char *argv[]) {
     double  *values;
     
     double load_data_time, block_power_time, knn_time, save_time;
+    double total_exec_time;
 
     int err_data = load_plink_partition_mpi(
         read_prefix, rank, world_size,
@@ -98,17 +99,30 @@ int main(int argc, char *argv[]) {
     free(col_ind);
     free(values);
 
+    total_exec_time = load_data_time + block_power_time + knn_time + save_time;
+
     MPI_Win_lock(MPI_LOCK_EXCLUSIVE, 0, 0, win);
     {
         printf("Timing of rank %d\n", rank);
-        printf("Load data time %.4f\n", load_data_time);
-        printf("Block power iter computation time: %.4f\n", block_power_time);
-        printf("KNN indices computation time: %.4f\n", knn_time);
-        printf("Total computation completed in: %.4f seconds\n", block_power_time + knn_time);
+        printf("Load data time %.4f seconds\n", load_data_time);
+        printf("Block power iter computation time: %.4f seconds\n", block_power_time);
+        printf("KNN indices computation time: %.4f seconds\n", knn_time);
+        printf("Total computation time: %.4f seconds\n", block_power_time + knn_time);
         printf("Save data time: %.4f seconds\n", save_time);
+        printf("Total execution time: %4f seconds\n", total_exec_time);
         printf("-------------------\n");
     }
     MPI_Win_unlock(0, win);
+    
+    MPI_Allreduce(MPI_IN_PLACE, &total_exec_time, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+
+    if (rank == 0) {
+        double total_flops = get_theoretical_flop(N, M_global, d, n_iter, nnz);
+        printf("Total Application FLOPs : %.3e (%.2f GFLOP/s)\n", 
+           total_flops, (total_flops / total_exec_time) / 1e9
+        );
+        printf("Maximum Execution Time: %4f\n", total_exec_time);
+    }
 
     MPI_Win_free(&win);
     MPI_Finalize();

@@ -56,3 +56,5 @@ bool validate(
 );
 
 void get_start_end(MKL_INT N, int rank, int world_size, MKL_INT *N_start, MKL_INT *N_end);
+
+double get_theoretical_flop(MKL_INT N, MKL_INT M, int d, int n_iter, MKL_INT nnz);
